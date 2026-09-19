@@ -58,6 +58,11 @@ Three planes over one environment layer:
   `.fold/check`; a fresh LLM context weighs diff + check results and
   posts an official Forgejo review. Verdicts: approve / request_changes /
   escalate (bellwether's raise-hand).
+- `bin/foldctl` — control plane v0 (CLI seed of the board): list and
+  dispatch tasks, and the mechanized pause-default policy — `pause` /
+  `resume` freeze a workspace's incus instance with RAM preserved, and
+  `watch` responds to failing tasks by freezing + notifying, never
+  deleting.
 - `templates/` — Coder task templates: `tasks-docker` (docker provider)
   and `fold-incus` (incus instances with persistent home volumes).
   Secrets enter as sensitive Terraform variables at push time, never in

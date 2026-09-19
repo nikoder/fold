@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""foldctl — fold control plane v0 (CLI seed of the board).
+
+Commands:
+  tasks                       list tasks with workspace + agent state
+  dispatch TEMPLATE PROMPT..  create a task from a template's active version
+  pause WORKSPACE             freeze the workspace's incus instance (RAM kept,
+                              inspectable, instantly resumable)
+  resume WORKSPACE            unfreeze
+  stop WORKSPACE              graceful stop via Coder (end-of-task lifecycle)
+  watch [--once]              poll tasks; on failure: notify + pause. NEVER
+                              deletes anything — deletion is a human act.
+
+Config via env (defaults suit the eval deployment):
+  FOLD_CODER_URL   (http://localhost:7081)
+  FOLD_CODER_TOKEN_FILE (~/coder-eval/.api-token-tasks)
+  FOLD_CREDS       (~/coder-eval/bellwether.env)   # ntfy token
+  FOLD_NTFY        (https://ntfy.fold.example/fold)
+"""
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.request
+
+CODER = os.environ.get("FOLD_CODER_URL", "http://localhost:7081")
+TOKEN_FILE = os.path.expanduser(
+    os.environ.get("FOLD_CODER_TOKEN_FILE", "~/coder-eval/.api-token-tasks"))
+CREDS = os.path.expanduser(
+    os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
+NTFY = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
+TOKEN = open(TOKEN_FILE).read().strip()
+
+
+def api(path, method="GET", body=None):
+    req = urllib.request.Request(
+        f"{CODER}{path}", method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Coder-Session-Token": TOKEN, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.load(r)
+
+
+def ntfy(title, message):
+    tok = re.search(r"FOLD_NTFY_TOKEN=(.*)", open(CREDS).read()).group(1).strip()
+    req = urllib.request.Request(
+        NTFY, data=message.encode(),
+        headers={"Authorization": f"Bearer {tok}", "Title": title})
+    urllib.request.urlopen(req, timeout=30)
+
+
+def incus(*args, ok_fail=False):
+    r = subprocess.run(["incus", *args], capture_output=True, text=True)
+    if r.returncode and not ok_fail:
+        sys.exit(f"incus {' '.join(args)}: {r.stderr.strip()}")
+    return r
+
+
+def instance_name(ws):
+    # Coder incus template convention: coder-<owner>-<workspace>
+    owner = api("/api/v2/users/me")["username"]
+    return f"coder-{owner.lower()}-{ws.lower()}"
+
+
+def get_tasks():
+    # list lives at ?owner=me; /tasks/me is the create/get-by-id prefix
+    d = api("/api/experimental/tasks?owner=me")
+    return d if isinstance(d, list) else d.get("tasks", [])
+
+
+def cmd_tasks():
+    for t in get_tasks():
+        state = (t.get("current_state") or {}).get("state", "-")
+        print(f"{t['name']:24} ws={t['workspace_status']:10} "
+              f"agent={t.get('workspace_agent_lifecycle') or '-':12} task={state}")
+
+
+def cmd_dispatch(template, prompt):
+    org = api("/api/v2/organizations")[0]["id"]
+    tv = next(t["active_version_id"]
+              for t in api(f"/api/v2/organizations/{org}/templates")
+              if t["name"] == template)
+    name = f"task-{int(time.time()) % 100000}"
+    t = api("/api/experimental/tasks/me", "POST", {
+        "template_version_id": tv, "name": name,
+        "prompt": prompt, "input": prompt})
+    print(f"dispatched {t['name']} (workspace {t['workspace_name']})")
+
+
+def cmd_pause(ws):
+    incus("pause", instance_name(ws))
+    print(f"{ws}: frozen (RAM preserved; 'foldctl resume {ws}' to continue)")
+
+
+def cmd_resume(ws):
+    incus("resume", instance_name(ws))
+    print(f"{ws}: resumed")
+
+
+def cmd_stop(ws):
+    # End-of-task lifecycle, not failure handling: home volume persists.
+    build = api(f"/api/v2/users/me/workspace/{ws}")["latest_build"]["id"]
+    api(f"/api/v2/workspaces/{api(f'/api/v2/users/me/workspace/{ws}')['id']}/builds",
+        "POST", {"transition": "stop"})
+    print(f"{ws}: stop requested (build was {build})")
+
+
+def cmd_watch(once=False):
+    """Pause-default failure policy: freeze + notify. Never delete."""
+    seen = set()
+    while True:
+        for t in get_tasks():
+            failing = (t["workspace_status"] == "failed"
+                       or t.get("workspace_agent_lifecycle") in
+                       ("start_error", "start_timeout"))
+            key = (t["name"], t["workspace_status"],
+                   t.get("workspace_agent_lifecycle"))
+            if failing and key not in seen:
+                seen.add(key)
+                name = t["workspace_name"]
+                inst = instance_name(name)
+                r = incus("pause", inst, ok_fail=True)
+                paused = "frozen for inspection" if r.returncode == 0 else \
+                         "not an incus workspace (or already stopped) — left as-is"
+                ntfy(f"fold: task {t['name']} failing",
+                     f"workspace={name} status={t['workspace_status']} "
+                     f"agent={t.get('workspace_agent_lifecycle')}; {paused}. "
+                     f"Nothing was deleted.")
+                print(f"[watch] {t['name']}: {paused}, notified")
+        if once:
+            return
+        time.sleep(60)
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        sys.exit(__doc__)
+    cmd, rest = args[0], args[1:]
+    if cmd == "tasks":
+        cmd_tasks()
+    elif cmd == "dispatch" and len(rest) >= 2:
+        cmd_dispatch(rest[0], " ".join(rest[1:]))
+    elif cmd in ("pause", "resume", "stop") and len(rest) == 1:
+        {"pause": cmd_pause, "resume": cmd_resume, "stop": cmd_stop}[cmd](rest[0])
+    elif cmd == "watch":
+        cmd_watch(once="--once" in rest)
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()
