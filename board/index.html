@@ -149,15 +149,30 @@ function taskCard(t, colName) {
     <div class="m">${stChip(t)} ${chip("neutral", t.name)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
+async function ack(id) {
+  await fetch("/api/ack", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify({id})});
+  refresh();
+}
+function handCard(h) {
+  const when = new Date(h.time * 1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  return `<div class="card hand">
+    <div class="t">✋ ${h.title.replace(/^raise-hand:\s*/,"")}</div>
+    <div class="t" style="font-weight:400">${h.message}</div>
+    <div class="m">${chip("attn", when)}</div>
+    <div class="a"><button class="quiet" onclick="ack('${h.id}')">Acknowledge</button></div></div>`;
+}
 async function refresh() {
   const s = await fetch("/api/state").then(r=>r.json());
   $("#stats").innerHTML =
     chip("working", `${s.host.working}/${s.host.max_working} working`) +
     chip("neutral", `host ${s.host.avail_gib} GiB free`) +
+    (s.hands.length ? chip("attn", `✋ ${s.hands.length}`) : "") +
     (s.fleet.some(f=>f.status==="Frozen") ? chip("frozen","frozen present") : "");
   $("#board").innerHTML = COLS.map(([name, pred]) => {
-    const cards = s.tasks.filter(pred).map(t => taskCard(t, name)).join("") ||
-      `<div class="card" style="color:var(--soft)">—</div>`;
+    let cards = s.tasks.filter(pred).map(t => taskCard(t, name)).join("");
+    if (name === "Needs you") cards = s.hands.map(handCard).join("") + cards;
+    cards = cards || `<div class="card" style="color:var(--soft)">—</div>`;
     return `<div class="col${name==="Needs you"?" attn":""}"><h3>${name}</h3>
             <div class="cards">${cards}</div></div>`;
   }).join("");

@@ -12,7 +12,9 @@ FOLD_CODER_URL, FOLD_CODER_TOKEN_FILE, FOLD_MAX_WORKING.
 """
 import json
 import os
+import re
 import subprocess
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -24,6 +26,58 @@ TOKEN_FILE = os.path.expanduser(
 TOKEN = open(TOKEN_FILE).read().strip()
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
 ALLOWED_VERBS = {"pause", "resume", "stop"}
+CREDS = os.path.expanduser(
+    os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
+NTFY_TOPIC = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
+STATE_DIR = os.path.expanduser(
+    os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
+ACK_FILE = os.path.join(STATE_DIR, "hands-ack.json")
+
+_hands_cache = {"t": 0.0, "hands": []}
+
+
+def hands():
+    """Raised hands from the ntfy topic (read-only subscription).
+
+    The board is a READER of the raise-hand channel, never a relay:
+    agents' direct line to a human must not depend on this process.
+    """
+    now = time.time()
+    if now - _hands_cache["t"] < 15:
+        return _hands_cache["hands"]
+    try:
+        tok = re.search(r"FOLD_BOARD_NTFY_TOKEN=(.*)",
+                        open(CREDS).read()).group(1).strip()
+        req = urllib.request.Request(
+            f"{NTFY_TOPIC}/json?poll=1&since=48h",
+            headers={"Authorization": f"Bearer {tok}"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            msgs = [json.loads(l) for l in r.read().decode().splitlines() if l]
+    except Exception:
+        return _hands_cache["hands"]
+    try:
+        acked = set(json.load(open(ACK_FILE)))
+    except (FileNotFoundError, json.JSONDecodeError):
+        acked = set()
+    out = [{"id": m["id"], "time": m["time"],
+            "title": m.get("title", ""), "message": m.get("message", "")}
+           for m in msgs
+           if m.get("event") == "message"
+           and m.get("title", "").startswith("raise-hand")
+           and m["id"] not in acked]
+    _hands_cache.update(t=now, hands=out)
+    return out
+
+
+def ack_hand(hand_id):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    try:
+        acked = set(json.load(open(ACK_FILE)))
+    except (FileNotFoundError, json.JSONDecodeError):
+        acked = set()
+    acked.add(hand_id)
+    json.dump(sorted(acked), open(ACK_FILE, "w"))
+    _hands_cache["t"] = 0.0
 
 
 def coder(path):
@@ -67,7 +121,7 @@ def state():
         if line.startswith("MemAvailable:"):
             avail = round(int(line.split()[1]) / 2**20, 1)
     working = sum(1 for t in slim if t["ws_status"] == "running")
-    return {"tasks": slim, "fleet": incus_instances(),
+    return {"tasks": slim, "fleet": incus_instances(), "hands": hands(),
             "host": {"avail_gib": avail, "max_working": MAX_WORKING,
                      "working": working}}
 
@@ -108,6 +162,11 @@ class H(BaseHTTPRequestHandler):
             if not tpl or not prompt:
                 return self._send(400, {"error": "template and prompt required"})
             return self._send(200, foldctl("dispatch", tpl, prompt))
+        if self.path == "/api/ack":
+            if not body.get("id"):
+                return self._send(400, {"error": "id required"})
+            ack_hand(body["id"])
+            return self._send(200, {"ok": True})
         if self.path == "/api/action":
             verb, ws = body.get("verb", ""), body.get("workspace", "")
             if verb not in ALLOWED_VERBS or not ws:

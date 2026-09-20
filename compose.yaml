@@ -1,0 +1,27 @@
+# fold board — run from a checkout of this repo:
+#   docker compose up -d --build
+#
+# Host networking: the board binds 127.0.0.1:7070 on the host (reach it
+# via SSH tunnel or your reverse proxy) and needs to talk to Coder on
+# localhost plus LAN services. Mutations go through foldctl, which needs
+# the incus socket.
+services:
+  board:
+    build: ./board
+    container_name: fold-board
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      FOLD_CODER_URL: ${FOLD_CODER_URL:-http://localhost:7081}
+      FOLD_CODER_TOKEN_FILE: /creds/.api-token-tasks
+      FOLD_CREDS: /creds/bellwether.env
+      FOLD_STATE_DIR: /state
+      FOLD_MAX_WORKING: ${FOLD_MAX_WORKING:-6}
+    volumes:
+      - ./:/app:ro
+      - /var/lib/incus/unix.socket:/var/lib/incus/unix.socket
+      - ${FOLD_CREDS_DIR:-~/coder-eval}:/creds:ro
+      - fold_state:/state
+
+volumes:
+  fold_state:

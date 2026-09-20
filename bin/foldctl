@@ -33,7 +33,8 @@ CREDS = os.path.expanduser(
 NTFY = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
 TOKEN = open(TOKEN_FILE).read().strip()
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
-STATE_DIR = os.path.expanduser("~/.local/state/fold")
+STATE_DIR = os.path.expanduser(
+    os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
 MEMSTATS = os.path.join(STATE_DIR, "memstats.jsonl")
 
 
