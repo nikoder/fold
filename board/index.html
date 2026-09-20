@@ -167,7 +167,7 @@ function taskCard(t, colName) {
   const hand = colName==="Needs you";
   return `<div class="card${hand?" hand":""}">
     <div class="t">${t.prompt || t.name}</div>
-    <div class="m">${stChip(t)} ${chip("neutral", t.name)}</div>
+    <div class="m">${stChip(t)} ${chip("neutral", t.name)}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
 

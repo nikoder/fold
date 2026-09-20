@@ -123,7 +123,7 @@ def record_memstats(ws, template=""):
     return rec
 
 
-def cmd_dispatch(template, prompt, mem_gib=None):
+def cmd_dispatch(template, prompt, mem_gib=None, ctx=None):
     # Admission control: inference slots (max working) + RAM headroom.
     working = sum(1 for t in get_tasks() if t["workspace_status"] == "running")
     if working >= MAX_WORKING:
@@ -143,8 +143,18 @@ def cmd_dispatch(template, prompt, mem_gib=None):
     t = api("/api/experimental/tasks/me", "POST", {
         "template_version_id": tv, "name": name,
         "prompt": prompt, "input": prompt})
+    if ctx:
+        os.makedirs(STATE_DIR, exist_ok=True)
+        ctx_file = os.path.join(STATE_DIR, "ctx.json")
+        try:
+            m = json.load(open(ctx_file))
+        except (FileNotFoundError, json.JSONDecodeError):
+            m = {}
+        m[t["name"]] = ctx
+        json.dump(m, open(ctx_file, "w"), indent=1)
     print(f"dispatched {t['name']} (workspace {t['workspace_name']}, "
-          f"expected ~{need:.1f} GiB, host had {avail:.1f} GiB free)")
+          f"expected ~{need:.1f} GiB, host had {avail:.1f} GiB free"
+          + (f", ctx {ctx}" if ctx else "") + ")")
 
 
 def cmd_pause(ws):
@@ -214,10 +224,13 @@ def main():
     elif cmd == "memstats":
         cmd_memstats()
     elif cmd == "dispatch" and len(rest) >= 2:
-        mem = None
-        if rest[0] == "--mem":
-            mem, rest = float(rest[1]), rest[2:]
-        cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem)
+        mem, ctx = None, None
+        while rest and rest[0] in ("--mem", "--ctx"):
+            if rest[0] == "--mem":
+                mem, rest = float(rest[1]), rest[2:]
+            else:
+                ctx, rest = rest[1], rest[2:]
+        cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem, ctx=ctx)
     elif cmd in ("pause", "resume", "stop") and len(rest) == 1:
         {"pause": cmd_pause, "resume": cmd_resume, "stop": cmd_stop}[cmd](rest[0])
     elif cmd == "watch":

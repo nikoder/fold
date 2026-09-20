@@ -32,6 +32,31 @@ NTFY_TOPIC = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
 STATE_DIR = os.path.expanduser(
     os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
 HANDS_FILE = os.path.join(STATE_DIR, "hands.json")
+CTX_FILE = os.path.join(STATE_DIR, "ctx.json")
+
+# Two planes: loopback (the human's tunnel) has every verb. Anything else
+# — shepherd sessions on the incus bridge — must present the agent-plane
+# bearer token and gets only these paths: it can create work and talk,
+# never pause, stop, resolve, or read the human UI.
+AGENT_PLANE_PATHS = {
+    ("POST", "/api/dispatch"), ("GET", "/api/state"),
+}
+AGENT_PLANE_RES = [
+    ("POST", re.compile(r"/api/task/[\w-]+/message$")),
+    ("GET", re.compile(r"/api/task/[\w-]+/messages$")),
+]
+
+
+def board_token():
+    m = re.search(r"FOLD_BOARD_TOKEN=(.*)", open(CREDS).read())
+    return m.group(1).strip() if m else None
+
+
+def task_ctx():
+    try:
+        return json.load(open(CTX_FILE))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
 
 _hands_cache = {"t": 0.0}
 
@@ -135,8 +160,10 @@ def incus_instances():
 def state():
     d = coder("/api/experimental/tasks?owner=me")
     tasks = d if isinstance(d, list) else d.get("tasks", [])
+    ctx = task_ctx()
     slim = [{
         "name": t["name"],
+        "ctx": ctx.get(t["name"]),
         "workspace": t["workspace_name"],
         "prompt": (t.get("initial_prompt") or t.get("prompt") or
                    t.get("display_name") or "")[:140],
@@ -194,6 +221,23 @@ def foldctl(*args):
 
 
 class H(BaseHTTPRequestHandler):
+    def _gate(self, method):
+        """True if this request may proceed; sends the refusal itself."""
+        if self.client_address[0].startswith("127."):
+            return True
+        tok = board_token()
+        presented = (self.headers.get("Authorization") or "")
+        if not tok or presented != f"Bearer {tok}":
+            self._send(401, {"error": "agent plane requires bearer token"})
+            return False
+        if (method, self.path) in AGENT_PLANE_PATHS or any(
+                m == method and r.match(self.path)
+                for m, r in AGENT_PLANE_RES):
+            return True
+        self._send(403, {"error": "not available on the agent plane "
+                         "(dispatch and messaging only)"})
+        return False
+
     def _send(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
@@ -206,6 +250,8 @@ class H(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if not self._gate("GET"):
+            return
         if self.path == "/":
             with open(os.path.join(HERE, "index.html"), "rb") as f:
                 self._send(200, f.read(), "text/html; charset=utf-8")
@@ -235,6 +281,8 @@ class H(BaseHTTPRequestHandler):
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
+        if not self._gate("POST"):
+            return
         n = int(self.headers.get("Content-Length", 0))
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
@@ -244,7 +292,10 @@ class H(BaseHTTPRequestHandler):
             tpl, prompt = body.get("template", ""), body.get("prompt", "")
             if not tpl or not prompt:
                 return self._send(400, {"error": "template and prompt required"})
-            return self._send(200, foldctl("dispatch", tpl, prompt))
+            args = ["dispatch"]
+            if body.get("ctx"):
+                args += ["--ctx", str(body["ctx"])[:64]]
+            return self._send(200, foldctl(*args, tpl, prompt))
         if self.path == "/api/resolve":
             if not body.get("id"):
                 return self._send(400, {"error": "id required"})
