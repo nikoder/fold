@@ -155,6 +155,37 @@ def state():
                      "working": working}}
 
 
+def instance_ip(ws):
+    """eth0 IPv4 of the workspace's incus instance (host reaches incusbr0)."""
+    for i in json.loads(subprocess.run(
+            ["incus", "query", "/1.0/instances?recursion=2"],
+            capture_output=True, text=True).stdout or "[]"):
+        if i["name"].startswith("coder-") and \
+                i["name"].endswith(f"-{ws.lower()}"):
+            eth0 = (((i.get("state") or {}).get("network") or {})
+                    .get("eth0") or {})
+            for a in eth0.get("addresses", []):
+                if a["family"] == "inet":
+                    return a["address"]
+    return None
+
+
+def agentapi(ws, path, body=None):
+    """Proxy to the agentapi inside the workspace (port 3284)."""
+    ip = instance_ip(ws)
+    if not ip:
+        return {"error": f"no running incus instance for {ws}"}
+    req = urllib.request.Request(
+        f"http://{ip}:3284{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except Exception as e:
+        return {"error": str(e)}
+
+
 def foldctl(*args):
     r = subprocess.run([FOLDCTL, *args], capture_output=True, text=True,
                        timeout=600)
@@ -177,7 +208,27 @@ class H(BaseHTTPRequestHandler):
                 self._send(200, f.read(), "text/html; charset=utf-8")
         elif self.path == "/api/state":
             self._send(200, state())
+        elif self.path == "/api/events":
+            # SSE: push full state whenever it changes (3s cadence).
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            last = None
+            try:
+                while True:
+                    s = json.dumps(state())
+                    if s != last:
+                        self.wfile.write(f"data: {s}\n\n".encode())
+                        self.wfile.flush()
+                        last = s
+                    time.sleep(3)
+            except (BrokenPipeError, ConnectionResetError):
+                return
         else:
+            m = re.fullmatch(r"/api/task/([\w-]+)/messages", self.path)
+            if m:
+                return self._send(200, agentapi(m.group(1), "/messages"))
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -202,6 +253,13 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "verb must be one of "
                                         f"{sorted(ALLOWED_VERBS)} + workspace"})
             return self._send(200, foldctl(verb, ws))
+        m = re.fullmatch(r"/api/task/([\w-]+)/message", self.path)
+        if m:
+            content = body.get("content", "").strip()
+            if not content:
+                return self._send(400, {"error": "content required"})
+            return self._send(200, agentapi(
+                m.group(1), "/message", {"content": content, "type": "user"}))
         self._send(404, {"error": "not found"})
 
     def log_message(self, *a):

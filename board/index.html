@@ -78,6 +78,13 @@
     border-radius:6px; padding:.45em .6em; box-sizing:border-box; margin-bottom:.6rem; }
   dialog textarea { min-height:90px; resize:vertical; }
   .drow { display:flex; justify-content:flex-end; gap:.5rem; }
+  .term { background:#10140F; color:#C9D4C4; font-family:"IBM Plex Mono",monospace;
+          font-size:.72rem; line-height:1.5; border-radius:8px; padding:.8rem .9rem;
+          height:340px; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #taskdlg { width:min(760px,94vw); }
+  .msgrow { display:flex; gap:.5rem; margin-top:.6rem; }
+  .msgrow input { flex:1; font:inherit; font-size:.8rem; background:var(--raised);
+    color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:.45em .6em; }
   #toast { position:fixed; bottom:1rem; left:50%; transform:translateX(-50%);
            background:var(--ink); color:var(--bg); padding:.5em 1em; border-radius:8px;
            font-size:.78rem; opacity:0; transition:opacity .2s; max-width:80vw; }
@@ -107,6 +114,19 @@
     <div class="drow">
       <button class="quiet" id="cancel">Cancel</button>
       <button id="go">Dispatch</button>
+    </div>
+  </dialog>
+  <dialog id="taskdlg">
+    <h4 id="tdTitle">task</h4>
+    <div class="term" id="tdTerm">connecting…</div>
+    <div class="msgrow">
+      <input id="tdMsg" placeholder="Message the agent (lands in its session via agentapi)…">
+      <button id="tdSend">Send</button>
+    </div>
+    <div class="drow" style="margin-top:.6rem;">
+      <button class="quiet" id="tdPause">Pause</button>
+      <button class="quiet" id="tdStop">Stop</button>
+      <button class="quiet" id="tdClose">Close</button>
     </div>
   </dialog>
   <div id="toast" role="status"></div>
@@ -141,7 +161,8 @@ async function act(verb, ws) {
 }
 function taskCard(t, colName) {
   const acts = [];
-  if (t.ws_status==="running") acts.push(`<button class="quiet" onclick="act('pause','${t.workspace}')">Pause</button>`,
+  if (t.ws_status==="running") acts.push(`<button class="quiet" onclick="openTask('${t.workspace}','${t.name}')">Visit</button>`,
+                                         `<button class="quiet" onclick="act('pause','${t.workspace}')">Pause</button>`,
                                          `<button class="quiet" onclick="act('stop','${t.workspace}')">Stop</button>`);
   const hand = colName==="Needs you";
   return `<div class="card${hand?" hand":""}">
@@ -149,6 +170,47 @@ function taskCard(t, colName) {
     <div class="m">${stChip(t)} ${chip("neutral", t.name)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
+
+let visiting = null, visitTimer = null;
+async function pollVisit() {
+  if (!visiting) return;
+  const d = await fetch(`/api/task/${visiting}/messages`).then(r=>r.json());
+  const el = $("#tdTerm");
+  if (d.error) { el.textContent = d.error; return; }
+  const msgs = d.messages || [];
+  const last = msgs.filter(m => m.role === "agent").slice(-1)[0];
+  const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
+  el.textContent = last ? (last.message || last.content || "")
+                        : "no agent output yet";
+  if (stick) el.scrollTop = el.scrollHeight;
+}
+function openTask(ws, name) {
+  visiting = ws;
+  $("#tdTitle").textContent = name || ws;
+  $("#tdTerm").textContent = "connecting…";
+  $("#taskdlg").showModal();
+  pollVisit();
+  visitTimer = setInterval(pollVisit, 2500);
+}
+function closeTask() {
+  visiting = null;
+  clearInterval(visitTimer);
+  $("#taskdlg").close();
+}
+$("#tdClose").onclick = closeTask;
+$("#taskdlg").addEventListener("close", () => { visiting=null; clearInterval(visitTimer); });
+$("#tdPause").onclick = () => { act("pause", visiting); };
+$("#tdStop").onclick = () => { const w=visiting; closeTask(); act("stop", w); };
+$("#tdSend").onclick = async () => {
+  const msg = $("#tdMsg").value.trim();
+  if (!msg || !visiting) return;
+  $("#tdMsg").value = "";
+  const r = await fetch(`/api/task/${visiting}/message`, {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({content: msg})}).then(r=>r.json());
+  if (r.error) toast(r.error); else pollVisit();
+};
+$("#tdMsg").addEventListener("keydown", (e) => { if (e.key==="Enter") $("#tdSend").click(); });
 async function resolveHand(id) {
   await fetch("/api/resolve", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id})});
@@ -201,7 +263,14 @@ $("#go").onclick = async () => {
   toast(r.out || (r.ok ? "dispatched" : "failed")); refresh();
 };
 refresh();
-setInterval(refresh, 5000);
+// SSE keeps the board fresh; the interval is only a reconnect fallback.
+try {
+  const es = new EventSource("/api/events");
+  es.onmessage = () => refresh();
+  setInterval(refresh, 60000);
+} catch (e) {
+  setInterval(refresh, 5000);
+}
 </script>
 </body>
 </html>
