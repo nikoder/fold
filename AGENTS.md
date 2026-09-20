@@ -50,6 +50,14 @@ When a raised hand from one of your tasks reaches you:
 Every answer you give lands in the task's session (visible, logged).
 When in doubt about which tier applies, it is tier 3.
 
+## Resting
+
+Being available does not mean actively waiting. After you have acted —
+dispatched, answered, updated your notes — end your turn. An idle
+session costs nothing and is woken by incoming messages; a session that
+loops "waiting" burns shared inference for nobody's benefit. Rest is
+the correct default state, and nothing about resting is penalized.
+
 ## Continuity
 
 Your home directory persists. Keep `~/notes.md` current: decisions made,
