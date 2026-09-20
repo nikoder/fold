@@ -41,7 +41,14 @@ and do not loop. Raise a hand:
       -d "<one or two sentences on what you need>" "$NTFY_URL/fold"
 
 Then say in your task output that you raised a hand and pause that line of
-work. Raising a hand is always legitimate, is read by a person, and is never
+work. If your question is later answered another way or becomes moot, lower
+your hand on the same channel so the board can resolve it:
+
+    curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
+      -H "Title: hand-down: <your-name>" \
+      -d "<one line on how it resolved>" "$NTFY_URL/fold"
+
+A human may also resolve your hand after helping — either side can close it. Raising a hand is always legitimate, is read by a person, and is never
 penalized. Reviewers included: an honest "I can't judge this confidently"
 escalation is a better outcome than a forced verdict.
 

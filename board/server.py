@@ -31,53 +31,82 @@ CREDS = os.path.expanduser(
 NTFY_TOPIC = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
 STATE_DIR = os.path.expanduser(
     os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
-ACK_FILE = os.path.join(STATE_DIR, "hands-ack.json")
+HANDS_FILE = os.path.join(STATE_DIR, "hands.json")
 
-_hands_cache = {"t": 0.0, "hands": []}
+_hands_cache = {"t": 0.0}
+
+
+def _load_hands():
+    try:
+        return json.load(open(HANDS_FILE))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_hands(store):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    json.dump(store, open(HANDS_FILE, "w"), indent=1)
+
+
+def _agent_of(title):
+    return re.sub(r"^(raise-hand|hand-down):\s*", "", title).strip()
 
 
 def hands():
-    """Raised hands from the ntfy topic (read-only subscription).
+    """Raised hands, durably tracked.
 
-    The board is a READER of the raise-hand channel, never a relay:
-    agents' direct line to a human must not depend on this process.
+    ntfy is the transport (short memory by design); fold owns the state:
+    anything the poll sees is merged into a durable log and stays OPEN
+    until resolved — by a human here, or by the agent lowering its own
+    hand with a `hand-down: <name>` message on the same direct line.
+    The board is a READER of the channel, never a relay: agents' line
+    to a human must not depend on this process.
     """
     now = time.time()
-    if now - _hands_cache["t"] < 15:
-        return _hands_cache["hands"]
-    try:
-        tok = re.search(r"FOLD_BOARD_NTFY_TOKEN=(.*)",
-                        open(CREDS).read()).group(1).strip()
-        req = urllib.request.Request(
-            f"{NTFY_TOPIC}/json?poll=1&since=48h",
-            headers={"Authorization": f"Bearer {tok}"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            msgs = [json.loads(l) for l in r.read().decode().splitlines() if l]
-    except Exception:
-        return _hands_cache["hands"]
-    try:
-        acked = set(json.load(open(ACK_FILE)))
-    except (FileNotFoundError, json.JSONDecodeError):
-        acked = set()
-    out = [{"id": m["id"], "time": m["time"],
-            "title": m.get("title", ""), "message": m.get("message", "")}
-           for m in msgs
-           if m.get("event") == "message"
-           and m.get("title", "").startswith("raise-hand")
-           and m["id"] not in acked]
-    _hands_cache.update(t=now, hands=out)
-    return out
+    store = _load_hands()
+    if now - _hands_cache["t"] >= 15:
+        _hands_cache["t"] = now
+        try:
+            tok = re.search(r"FOLD_BOARD_NTFY_TOKEN=(.*)",
+                            open(CREDS).read()).group(1).strip()
+            req = urllib.request.Request(
+                f"{NTFY_TOPIC}/json?poll=1&since=72h",
+                headers={"Authorization": f"Bearer {tok}"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                msgs = [json.loads(l)
+                        for l in r.read().decode().splitlines() if l]
+        except Exception:
+            msgs = []
+        dirty = False
+        for m in sorted(msgs, key=lambda m: m.get("time", 0)):
+            if m.get("event") != "message":
+                continue
+            title = m.get("title", "")
+            if title.startswith("raise-hand") and m["id"] not in store:
+                store[m["id"]] = {"id": m["id"], "time": m["time"],
+                                  "title": title,
+                                  "message": m.get("message", ""),
+                                  "resolved": None}
+                dirty = True
+            elif title.startswith("hand-down"):
+                agent = _agent_of(title)
+                for h in store.values():
+                    if (h["resolved"] is None and h["time"] <= m["time"]
+                            and _agent_of(h["title"]) == agent):
+                        h["resolved"] = {"by": "agent", "t": m["time"],
+                                         "note": m.get("message", "")}
+                        dirty = True
+        if dirty:
+            _save_hands(store)
+    return sorted((h for h in store.values() if h["resolved"] is None),
+                  key=lambda h: h["time"])
 
 
-def ack_hand(hand_id):
-    os.makedirs(STATE_DIR, exist_ok=True)
-    try:
-        acked = set(json.load(open(ACK_FILE)))
-    except (FileNotFoundError, json.JSONDecodeError):
-        acked = set()
-    acked.add(hand_id)
-    json.dump(sorted(acked), open(ACK_FILE, "w"))
-    _hands_cache["t"] = 0.0
+def resolve_hand(hand_id):
+    store = _load_hands()
+    if hand_id in store and store[hand_id]["resolved"] is None:
+        store[hand_id]["resolved"] = {"by": "human", "t": int(time.time())}
+        _save_hands(store)
 
 
 def coder(path):
@@ -162,10 +191,10 @@ class H(BaseHTTPRequestHandler):
             if not tpl or not prompt:
                 return self._send(400, {"error": "template and prompt required"})
             return self._send(200, foldctl("dispatch", tpl, prompt))
-        if self.path == "/api/ack":
+        if self.path == "/api/resolve":
             if not body.get("id"):
                 return self._send(400, {"error": "id required"})
-            ack_hand(body["id"])
+            resolve_hand(body["id"])
             return self._send(200, {"ok": True})
         if self.path == "/api/action":
             verb, ws = body.get("verb", ""), body.get("workspace", "")

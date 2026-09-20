@@ -149,18 +149,18 @@ function taskCard(t, colName) {
     <div class="m">${stChip(t)} ${chip("neutral", t.name)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
-async function ack(id) {
-  await fetch("/api/ack", {method:"POST",
+async function resolveHand(id) {
+  await fetch("/api/resolve", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id})});
   refresh();
 }
 function handCard(h) {
-  const when = new Date(h.time * 1000).toLocaleTimeString([], {hour:"2-digit", minute:"2-digit"});
+  const when = new Date(h.time * 1000).toLocaleString([], {weekday:"short", hour:"2-digit", minute:"2-digit"});
   return `<div class="card hand">
     <div class="t">✋ ${h.title.replace(/^raise-hand:\s*/,"")}</div>
     <div class="t" style="font-weight:400">${h.message}</div>
     <div class="m">${chip("attn", when)}</div>
-    <div class="a"><button class="quiet" onclick="ack('${h.id}')">Acknowledge</button></div></div>`;
+    <div class="a"><button class="quiet" onclick="resolveHand('${h.id}')">Resolve</button></div></div>`;
 }
 async function refresh() {
   const s = await fetch("/api/state").then(r=>r.json());
