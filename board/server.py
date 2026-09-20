@@ -197,6 +197,9 @@ class H(BaseHTTPRequestHandler):
     def _send(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
+        # The UI ships with the server; a cached page after a deploy means
+        # missing buttons and confused humans. Never cache.
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
