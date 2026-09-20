@@ -32,6 +32,9 @@ CREDS = os.path.expanduser(
     os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
 NTFY = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
 TOKEN = open(TOKEN_FILE).read().strip()
+MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
+STATE_DIR = os.path.expanduser("~/.local/state/fold")
+MEMSTATS = os.path.join(STATE_DIR, "memstats.jsonl")
 
 
 def api(path, method="GET", body=None):
@@ -77,7 +80,60 @@ def cmd_tasks():
               f"agent={t.get('workspace_agent_lifecycle') or '-':12} task={state}")
 
 
-def cmd_dispatch(template, prompt):
+def host_available_gib():
+    for line in open("/proc/meminfo"):
+        if line.startswith("MemAvailable:"):
+            return int(line.split()[1]) / 2**20
+    return 0.0
+
+
+def learned_footprint_gib(template):
+    """Observed P90 of anon peaks for this template; None if no history."""
+    try:
+        peaks = [json.loads(l)["anon_peak_gib"] for l in open(MEMSTATS)
+                 if json.loads(l).get("template") == template]
+    except FileNotFoundError:
+        return None
+    if not peaks:
+        return None
+    peaks.sort()
+    return peaks[min(len(peaks) - 1, int(len(peaks) * 0.9))]
+
+
+def record_memstats(ws, template=""):
+    """Read the instance's peak/anon memory before it stops; append to log."""
+    inst = instance_name(ws)
+    r = incus("exec", inst, "--", "sh", "-c",
+              "cat /sys/fs/cgroup/memory.peak 2>/dev/null; "
+              "grep '^anon ' /sys/fs/cgroup/memory.stat", ok_fail=True)
+    if r.returncode:
+        return None
+    lines = r.stdout.split()
+    try:
+        peak, anon = int(lines[0]), int(lines[2])
+    except (IndexError, ValueError):
+        return None
+    os.makedirs(STATE_DIR, exist_ok=True)
+    rec = {"t": int(time.time()), "workspace": ws, "template": template,
+           "peak_gib": round(peak / 2**30, 2),
+           "anon_peak_gib": round(anon / 2**30, 2)}
+    with open(MEMSTATS, "a") as f:
+        f.write(json.dumps(rec) + "\n")
+    return rec
+
+
+def cmd_dispatch(template, prompt, mem_gib=None):
+    # Admission control: inference slots (max working) + RAM headroom.
+    working = sum(1 for t in get_tasks() if t["workspace_status"] == "running")
+    if working >= MAX_WORKING:
+        sys.exit(f"admission: {working} tasks already working "
+                 f"(max {MAX_WORKING}); queue it or raise FOLD_MAX_WORKING")
+    need = mem_gib or learned_footprint_gib(template) or 2.0
+    avail = host_available_gib()
+    if avail - 2.0 < need:  # keep 2 GiB host reserve
+        sys.exit(f"admission: task expects {need:.1f} GiB but host has "
+                 f"{avail:.1f} GiB available (2 GiB reserve); "
+                 "wait, stop something, or pass --mem to override")
     org = api("/api/v2/organizations")[0]["id"]
     tv = next(t["active_version_id"]
               for t in api(f"/api/v2/organizations/{org}/templates")
@@ -86,7 +142,8 @@ def cmd_dispatch(template, prompt):
     t = api("/api/experimental/tasks/me", "POST", {
         "template_version_id": tv, "name": name,
         "prompt": prompt, "input": prompt})
-    print(f"dispatched {t['name']} (workspace {t['workspace_name']})")
+    print(f"dispatched {t['name']} (workspace {t['workspace_name']}, "
+          f"expected ~{need:.1f} GiB, host had {avail:.1f} GiB free)")
 
 
 def cmd_pause(ws):
@@ -101,10 +158,22 @@ def cmd_resume(ws):
 
 def cmd_stop(ws):
     # End-of-task lifecycle, not failure handling: home volume persists.
-    build = api(f"/api/v2/users/me/workspace/{ws}")["latest_build"]["id"]
-    api(f"/api/v2/workspaces/{api(f'/api/v2/users/me/workspace/{ws}')['id']}/builds",
-        "POST", {"transition": "stop"})
-    print(f"{ws}: stop requested (build was {build})")
+    w = api(f"/api/v2/users/me/workspace/{ws}")
+    template = w.get("template_name", "")
+    rec = record_memstats(ws, template)
+    api(f"/api/v2/workspaces/{w['id']}/builds", "POST", {"transition": "stop"})
+    peak = f", anon peak {rec['anon_peak_gib']} GiB recorded" if rec else ""
+    print(f"{ws}: stop requested{peak}")
+
+
+def cmd_memstats():
+    try:
+        rows = [json.loads(l) for l in open(MEMSTATS)]
+    except FileNotFoundError:
+        sys.exit("no memory stats recorded yet")
+    for r in rows[-20:]:
+        print(f"{r['workspace']:24} {r['template']:14} "
+              f"anon_peak={r['anon_peak_gib']:>5} GiB  peak={r['peak_gib']:>5} GiB")
 
 
 def cmd_watch(once=False):
@@ -141,8 +210,13 @@ def main():
     cmd, rest = args[0], args[1:]
     if cmd == "tasks":
         cmd_tasks()
+    elif cmd == "memstats":
+        cmd_memstats()
     elif cmd == "dispatch" and len(rest) >= 2:
-        cmd_dispatch(rest[0], " ".join(rest[1:]))
+        mem = None
+        if rest[0] == "--mem":
+            mem, rest = float(rest[1]), rest[2:]
+        cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem)
     elif cmd in ("pause", "resume", "stop") and len(rest) == 1:
         {"pause": cmd_pause, "resume": cmd_resume, "stop": cmd_stop}[cmd](rest[0])
     elif cmd == "watch":

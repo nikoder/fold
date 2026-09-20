@@ -63,6 +63,10 @@ Three planes over one environment layer:
   `resume` freeze a workspace's incus instance with RAM preserved, and
   `watch` responds to failing tasks by freezing + notifying, never
   deleting.
+- `board/` — the board v0: a dependency-free web face over foldctl
+  (which stays the single audited mutation path). Live columns, dispatch
+  modal with admission control, fleet table with pause/resume. Binds
+  127.0.0.1:7070; reach it over SSH tunnel or a reverse-proxy route.
 - `templates/` — Coder task templates: `tasks-docker` (docker provider)
   and `fold-incus` (incus instances with persistent home volumes).
   Secrets enter as sensitive Terraform variables at push time, never in
