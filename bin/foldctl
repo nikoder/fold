@@ -171,8 +171,56 @@ def cmd_dispatch(template, prompt, mem_gib=None, ctx=None):
           + (f", ctx {ctx}" if ctx else "") + ")")
 
 
+def _instance_ip(inst):
+    r = incus("query", f"/1.0/instances/{inst}?recursion=1", ok_fail=True)
+    if r.returncode:
+        return None
+    eth0 = ((json.loads(r.stdout).get("state") or {})
+            .get("network") or {}).get("eth0") or {}
+    for a in eth0.get("addresses", []):
+        if a["family"] == "inet":
+            return a["address"]
+    return None
+
+
+def _agentapi(ip, path, body=None, timeout=10):
+    req = urllib.request.Request(
+        f"http://{ip}:3284{path}",
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.load(r)
+
+
 def cmd_pause(ws):
-    incus("pause", instance_name(ws))
+    """Interrupt, settle, then freeze.
+
+    Freezing mid-generation severs the agent's inference stream; on
+    resume it spins on the broken connection (learned 2026-09-22 from
+    the first shepherd). So: never ice a mind mid-sentence — send ESC,
+    wait for the agent to come to rest, then freeze.
+    """
+    inst = instance_name(ws)
+    ip = _instance_ip(inst)
+    if ip:
+        try:
+            if _agentapi(ip, "/status")["status"] != "stable":
+                print(f"{ws}: agent is mid-generation — interrupting first…")
+                _agentapi(ip, "/message",
+                          {"content": "\x1b", "type": "raw"})
+                deadline = time.time() + 45
+                while time.time() < deadline:
+                    if _agentapi(ip, "/status")["status"] == "stable":
+                        print(f"{ws}: agent at rest")
+                        break
+                    time.sleep(3)
+                else:
+                    print(f"{ws}: WARNING — no resting point reached in "
+                          "45s; freezing anyway. If resume spins, "
+                          "prefer 'stop'.")
+        except Exception:
+            pass  # no agentapi (not an agent workspace, or already quiet)
+    incus("pause", inst)
     print(f"{ws}: frozen (RAM preserved; 'foldctl resume {ws}' to continue)")
 
 
