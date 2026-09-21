@@ -14,6 +14,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -25,7 +26,7 @@ TOKEN_FILE = os.path.expanduser(
     os.environ.get("FOLD_CODER_TOKEN_FILE", "~/coder-eval/.api-token-tasks"))
 TOKEN = open(TOKEN_FILE).read().strip()
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
-ALLOWED_VERBS = {"pause", "resume", "stop"}
+ALLOWED_VERBS = {"pause", "resume", "stop", "start"}
 CREDS = os.path.expanduser(
     os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
 NTFY_TOPIC = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
@@ -161,6 +162,11 @@ def state():
     d = coder("/api/experimental/tasks?owner=me")
     tasks = d if isinstance(d, list) else d.get("tasks", [])
     ctx = task_ctx()
+    fleet = incus_instances()
+    # Coder doesn't know about incus freeze: overlay it. A frozen task is
+    # not working (zero CPU, zero inference) and must not hold a slot.
+    frozen_ws = {f["name"].split("-", 2)[2] for f in fleet
+                 if f["status"] == "Frozen" and f["name"].count("-") >= 2}
     slim = [{
         "name": t["name"],
         "ctx": ctx.get(t["name"]),
@@ -168,6 +174,7 @@ def state():
         "prompt": (t.get("initial_prompt") or t.get("prompt") or
                    t.get("display_name") or "")[:140],
         "ws_status": t["workspace_status"],
+        "frozen": t["workspace_name"].lower() in frozen_ws,
         "agent": t.get("workspace_agent_lifecycle"),
         "task_state": (t.get("current_state") or {}).get("state"),
         "updated": t.get("updated_at", ""),
@@ -176,10 +183,44 @@ def state():
     for line in open("/proc/meminfo"):
         if line.startswith("MemAvailable:"):
             avail = round(int(line.split()[1]) / 2**20, 1)
-    working = sum(1 for t in slim if t["ws_status"] == "running")
-    return {"tasks": slim, "fleet": incus_instances(), "hands": hands(),
+    working = sum(1 for t in slim
+                  if t["ws_status"] == "running" and not t["frozen"])
+    return {"tasks": slim, "fleet": fleet, "hands": hands(),
             "host": {"avail_gib": avail, "max_working": MAX_WORKING,
                      "working": working}}
+
+
+TRANSCRIPTS = os.path.join(STATE_DIR, "transcripts")
+
+
+def archive_transcripts():
+    """Snapshot every reachable task's agentapi messages every 30s, so
+    the transcript survives stop/freeze and Visit works in any state."""
+    while True:
+        try:
+            d = coder("/api/experimental/tasks?owner=me")
+            tasks = d if isinstance(d, list) else d.get("tasks", [])
+            for t in tasks:
+                if t["workspace_status"] != "running":
+                    continue
+                ws = t["workspace_name"]
+                msgs = agentapi(ws, "/messages")
+                if "error" in msgs:
+                    continue
+                os.makedirs(TRANSCRIPTS, exist_ok=True)
+                json.dump({"archived_at": int(time.time()),
+                           "messages": msgs.get("messages", [])},
+                          open(os.path.join(TRANSCRIPTS, f"{ws}.json"), "w"))
+        except Exception:
+            pass
+        time.sleep(30)
+
+
+def archived_transcript(ws):
+    try:
+        return json.load(open(os.path.join(TRANSCRIPTS, f"{ws}.json")))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
 
 
 def instance_ip(ws):
@@ -277,7 +318,13 @@ class H(BaseHTTPRequestHandler):
         else:
             m = re.fullmatch(r"/api/task/([\w-]+)/messages", self.path)
             if m:
-                return self._send(200, agentapi(m.group(1), "/messages"))
+                live = agentapi(m.group(1), "/messages")
+                if "error" not in live:
+                    return self._send(200, live)
+                arch = archived_transcript(m.group(1))
+                if arch:
+                    return self._send(200, arch)
+                return self._send(200, live)
             self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -323,5 +370,6 @@ class H(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     bind = os.environ.get("FOLD_BOARD_BIND", "127.0.0.1")
     port = int(os.environ.get("FOLD_BOARD_PORT", "7070"))
+    threading.Thread(target=archive_transcripts, daemon=True).start()
     print(f"fold board on http://{bind}:{port}")
     ThreadingHTTPServer((bind, port), H).serve_forever()

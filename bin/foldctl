@@ -123,9 +123,23 @@ def record_memstats(ws, template=""):
     return rec
 
 
+def frozen_workspaces():
+    r = incus("list", "--format", "csv", "-c", "ns", ok_fail=True)
+    out = set()
+    for line in (r.stdout or "").splitlines():
+        name, _, status = line.partition(",")
+        if status == "FROZEN" and name.count("-") >= 2:
+            out.add(name.split("-", 2)[2])
+    return out
+
+
 def cmd_dispatch(template, prompt, mem_gib=None, ctx=None):
     # Admission control: inference slots (max working) + RAM headroom.
-    working = sum(1 for t in get_tasks() if t["workspace_status"] == "running")
+    # Frozen instances hold no slot: zero CPU, zero inference.
+    frozen = frozen_workspaces()
+    working = sum(1 for t in get_tasks()
+                  if t["workspace_status"] == "running"
+                  and t["workspace_name"].lower() not in frozen)
     if working >= MAX_WORKING:
         sys.exit(f"admission: {working} tasks already working "
                  f"(max {MAX_WORKING}); queue it or raise FOLD_MAX_WORKING")
@@ -165,6 +179,13 @@ def cmd_pause(ws):
 def cmd_resume(ws):
     incus("resume", instance_name(ws))
     print(f"{ws}: resumed")
+
+
+def cmd_start(ws):
+    w = api(f"/api/v2/users/me/workspace/{ws}")
+    api(f"/api/v2/workspaces/{w['id']}/builds", "POST",
+        {"transition": "start"})
+    print(f"{ws}: start requested")
 
 
 def cmd_stop(ws):
@@ -231,8 +252,9 @@ def main():
             else:
                 ctx, rest = rest[1], rest[2:]
         cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem, ctx=ctx)
-    elif cmd in ("pause", "resume", "stop") and len(rest) == 1:
-        {"pause": cmd_pause, "resume": cmd_resume, "stop": cmd_stop}[cmd](rest[0])
+    elif cmd in ("pause", "resume", "stop", "start") and len(rest) == 1:
+        {"pause": cmd_pause, "resume": cmd_resume,
+         "stop": cmd_stop, "start": cmd_start}[cmd](rest[0])
     elif cmd == "watch":
         cmd_watch(once="--once" in rest)
     else:

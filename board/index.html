@@ -108,6 +108,7 @@
     <h4>Dispatch task</h4>
     <select id="tpl">
       <option value="fold-incus">fold-incus (incus instance)</option>
+      <option value="fold-shepherd">fold-shepherd (planning session — dispatches its own tasks)</option>
       <option value="tasks-docker">tasks-docker (docker container)</option>
     </select>
     <textarea id="prompt" placeholder="Task for the agent — AGENTS.md carries the workflow; write only the work itself."></textarea>
@@ -135,14 +136,15 @@
 const $ = (s) => document.querySelector(s);
 const COLS = [
   ["Queued", (t) => ["pending","starting"].includes(t.ws_status)],
-  ["Working", (t) => t.ws_status==="running" && t.task_state==="working"],
+  ["Working", (t) => t.ws_status==="running" && !t.frozen && t.task_state==="working"],
   ["Needs you", (t) => t.ws_status==="failed" ||
                        ["start_error","start_timeout"].includes(t.agent||"")],
-  ["Idle", (t) => t.ws_status==="running" && t.task_state!=="working"],
+  ["Idle", (t) => t.ws_status==="running" && (t.frozen || t.task_state!=="working")],
   ["Stopped", (t) => ["stopped","stopping"].includes(t.ws_status)],
 ];
 function chip(cls, text) { return `<span class="chip ${cls}">${text}</span>`; }
 function stChip(t) {
+  if (t.frozen) return chip("frozen","frozen");
   if (t.ws_status==="failed") return chip("failed","failed");
   if (t.ws_status==="running" && t.task_state==="working") return chip("working","working");
   if (t.ws_status==="running") return chip("done","idle");
@@ -160,10 +162,11 @@ async function act(verb, ws) {
   toast(r.out || (r.ok ? "done" : "failed")); refresh();
 }
 function taskCard(t, colName) {
-  const acts = [];
-  if (t.ws_status==="running") acts.push(`<button class="quiet" onclick="openTask('${t.workspace}','${t.name}')">Visit</button>`,
-                                         `<button class="quiet" onclick="act('pause','${t.workspace}')">Pause</button>`,
-                                         `<button class="quiet" onclick="act('stop','${t.workspace}')">Stop</button>`);
+  const acts = [`<button class="quiet" onclick="openTask('${t.workspace}','${t.name}','${t.frozen ? "frozen" : t.ws_status}')">Visit</button>`];
+  if (t.frozen) acts.push(`<button class="quiet" onclick="act('resume','${t.workspace}')">Resume</button>`);
+  else if (t.ws_status==="running") acts.push(`<button class="quiet" onclick="act('pause','${t.workspace}')">Pause</button>`,
+                                              `<button class="quiet" onclick="act('stop','${t.workspace}')">Stop</button>`);
+  else if (["stopped"].includes(t.ws_status)) acts.push(`<button class="quiet" onclick="act('start','${t.workspace}')">Start</button>`);
   const hand = colName==="Needs you";
   return `<div class="card${hand?" hand":""}">
     <div class="t">${t.prompt || t.name}</div>
@@ -180,13 +183,15 @@ async function pollVisit() {
   const msgs = d.messages || [];
   const last = msgs.filter(m => m.role === "agent").slice(-1)[0];
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-  el.textContent = last ? (last.message || last.content || "")
-                        : "no agent output yet";
+  const banner = d.archived_at
+    ? `— archived transcript from ${new Date(d.archived_at*1000).toLocaleString()} (session not reachable; Resume/Start to go live) —\n\n` : "";
+  el.textContent = banner + (last ? (last.message || last.content || "")
+                                  : "no agent output yet");
   if (stick) el.scrollTop = el.scrollHeight;
 }
-function openTask(ws, name) {
+function openTask(ws, name, st) {
   visiting = ws;
-  $("#tdTitle").textContent = name || ws;
+  $("#tdTitle").textContent = (name || ws) + (st && st!=="running" ? ` · ${st}` : "");
   $("#tdTerm").textContent = "connecting…";
   $("#taskdlg").showModal();
   pollVisit();
