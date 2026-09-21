@@ -181,12 +181,14 @@ async function pollVisit() {
   const el = $("#tdTerm");
   if (d.error) { el.textContent = d.error; return; }
   const msgs = d.messages || [];
-  const last = msgs.filter(m => m.role === "agent").slice(-1)[0];
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
   const banner = d.archived_at
     ? `— archived transcript from ${new Date(d.archived_at*1000).toLocaleString()} (session not reachable; Resume/Start to go live) —\n\n` : "";
-  el.textContent = banner + (last ? (last.message || last.content || "")
-                                  : "no agent output yet");
+  const squeeze = (s) => (s||"").replace(/[ \t]+$/gm,"").replace(/\n{3,}/g,"\n\n").trim();
+  const body = msgs.map(m =>
+    (m.role === "user" ? "──── you / fold ────\n" : "──── agent ────\n")
+    + squeeze(m.message || m.content)).join("\n\n") || "no output yet";
+  el.textContent = banner + body;
   if (stick) el.scrollTop = el.scrollHeight;
 }
 function openTask(ws, name, st) {

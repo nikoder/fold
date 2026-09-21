@@ -129,6 +129,14 @@ module "opencode" {
   report_tasks = true
   config_json = jsonencode({
     "$schema" = "https://opencode.ai/config.json"
+    # No harness permission prompts inside the fold: the environment
+    # boundary is the sandbox, and a TUI dialog nobody sees just wedges
+    # the agent (first shepherd v2 froze on "access ~" writing notes.md).
+    permission = {
+      edit     = "allow"
+      bash     = "allow"
+      webfetch = "allow"
+    }
     provider = {
       llamaswap = {
         npm  = "@ai-sdk/openai-compatible"
