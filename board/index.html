@@ -226,7 +226,7 @@ function handCard(h) {
   return `<div class="card hand">
     <div class="t">✋ ${h.title.replace(/^raise-hand:\s*/,"")}</div>
     <div class="t" style="font-weight:400">${h.message}</div>
-    <div class="m">${chip("attn", when)}</div>
+    <div class="m">${chip("attn", when)}${h.workspace ? " " + chip("neutral", h.workspace) : ""}${h.forwarded ? " " + chip("frozen", "→ " + h.forwarded.to) : ""}</div>
     <div class="a"><button class="quiet" onclick="resolveHand('${h.id}')">Resolve</button></div></div>`;
 }
 async function refresh() {

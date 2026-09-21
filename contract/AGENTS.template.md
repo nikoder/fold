@@ -38,14 +38,19 @@ and do not loop. Raise a hand:
 
     curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
       -H "Title: raise-hand: <your-name>" \
+      -H "Tags: $(hostname)" \
       -d "<one or two sentences on what you need>" "$NTFY_URL/fold"
 
-Then say in your task output that you raised a hand and pause that line of
-work. If your question is later answered another way or becomes moot, lower
+The Tags header (your hostname = your workspace name) lets the fold route
+your hand to the planning session that dispatched you, which may be able
+to answer from its context — your direct line to the human fires either
+way. Then say in your task output that you raised a hand and pause that
+line of work. If your question is later answered another way or becomes moot, lower
 your hand on the same channel so the board can resolve it:
 
     curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
       -H "Title: hand-down: <your-name>" \
+      -H "Tags: $(hostname)" \
       -d "<one line on how it resolved>" "$NTFY_URL/fold"
 
 A human may also resolve your hand after helping — either side can close it. Raising a hand is always legitimate, is read by a person, and is never

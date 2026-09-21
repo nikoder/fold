@@ -109,9 +109,11 @@ def hands():
                 continue
             title = m.get("title", "")
             if title.startswith("raise-hand") and m["id"] not in store:
+                tags = m.get("tags") or []
                 store[m["id"]] = {"id": m["id"], "time": m["time"],
                                   "title": title,
                                   "message": m.get("message", ""),
+                                  "workspace": tags[0] if tags else None,
                                   "resolved": None}
                 dirty = True
             elif title.startswith("hand-down"):
@@ -124,8 +126,53 @@ def hands():
                         dirty = True
         if dirty:
             _save_hands(store)
+        if _forward_hands(store):
+            _save_hands(store)
     return sorted((h for h in store.values() if h["resolved"] is None),
                   key=lambda h: h["time"])
+
+
+def _forward_hands(store):
+    """Routing stage C: bring a task's open hand to its shepherd.
+
+    Forwarding never replaces the direct line — the human's push already
+    fired and the hand stays open on the board until resolved (by human,
+    or by the agent's hand-down after the shepherd's answer). We forward
+    only when the ctx session is at rest, retrying on later polls.
+    """
+    ctx = task_ctx()
+    dirty = False
+    for h in store.values():
+        if h["resolved"] or h.get("forwarded") or not h.get("workspace"):
+            continue
+        session = ctx.get(h["workspace"])
+        if not session:
+            continue
+        try:
+            ip = instance_ip(session)
+            if not ip:
+                continue
+            req = urllib.request.Request(f"http://{ip}:3284/status")
+            with urllib.request.urlopen(req, timeout=5) as r:
+                if json.load(r)["status"] != "stable":
+                    continue
+        except Exception:
+            continue
+        agent = re.sub(r"^raise-hand:\s*", "", h["title"]).strip()
+        note = (f"[fold] raise-hand from {agent} (workspace "
+                f"{h['workspace']}, dispatched under your ctx): "
+                f"\"{h['message']}\"\n"
+                f"Per your three-tier rule: if this is tier 1 or 2, answer "
+                f"the agent via POST $FOLD_BOARD_URL/api/task/"
+                f"{h['workspace']}/message and state your evidence; if it "
+                f"requires a new decision (tier 3), do not answer — say so "
+                f"and leave it for the human. Then rest. The hand stays "
+                f"open until resolved either way.")
+        r = agentapi(session, "/message", {"content": note, "type": "user"})
+        if "error" not in r:
+            h["forwarded"] = {"to": session, "t": int(time.time())}
+            dirty = True
+    return dirty
 
 
 def resolve_hand(hand_id):
@@ -250,6 +297,11 @@ def agentapi(ws, path, body=None):
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 500 and path == "/message":
+            return {"error": "agent is busy (mid-generation) — "
+                    "try again in a moment"}
+        return {"error": str(e)}
     except Exception as e:
         return {"error": str(e)}
 
