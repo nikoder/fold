@@ -167,6 +167,7 @@ resource "coder_agent" "main" {
     FORGEJO_URL         = "https://git.fold.example"
     FORGEJO_REPO        = "you/fold-playground"
     FORGEJO_TOKEN       = var.forgejo_author_token
+    FOLD_WORKSPACE      = data.coder_workspace.me.name
     NTFY_URL            = "https://ntfy.fold.example"
     NTFY_TOKEN          = var.fold_ntfy_token
     # Shepherd's agent-plane access: dispatch + messaging only.
