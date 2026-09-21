@@ -217,6 +217,7 @@ def state():
     slim = [{
         "name": t["name"],
         "ctx": ctx.get(t["name"]),
+        "template": t.get("template_name", ""),
         "workspace": t["workspace_name"],
         "prompt": (t.get("initial_prompt") or t.get("prompt") or
                    t.get("display_name") or "")[:140],
