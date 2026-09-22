@@ -315,9 +315,19 @@ def foldctl(*args):
 
 
 class H(BaseHTTPRequestHandler):
+    def _human_secret(self):
+        m = re.search(r"FOLD_HUMAN_SECRET=(.*)", open(CREDS).read())
+        return m.group(1).strip() if m else None
+
     def _gate(self, method):
         """True if this request may proceed; sends the refusal itself."""
         if self.client_address[0].startswith("127."):
+            return True
+        # Human plane via the reverse proxy: Caddy performs basic auth and
+        # injects this secret; browsers can't forge it past Caddy because
+        # the route always overwrites the header.
+        hs = self._human_secret()
+        if hs and self.headers.get("X-Fold-Human") == hs:
             return True
         tok = board_token()
         presented = (self.headers.get("Authorization") or "")
