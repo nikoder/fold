@@ -82,9 +82,11 @@
   dialog textarea { min-height:90px; resize:vertical; }
   .drow { display:flex; justify-content:flex-end; gap:.5rem; }
   .term { background:#10140F; color:#C9D4C4; font-family:"IBM Plex Mono",monospace;
-          font-size:.72rem; line-height:1.5; border-radius:8px; padding:.8rem .9rem;
-          height:340px; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
-  #taskdlg { width:min(760px,94vw); }
+          font-size:.74rem; line-height:1.5; border-radius:8px; padding:.8rem .9rem;
+          flex:1; min-height:300px; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  #taskdlg { width:min(1100px,96vw); height:min(88vh,950px); display:flex;
+             flex-direction:column; }
+  #taskdlg[open] { display:flex; }
   .msgrow { display:flex; gap:.5rem; margin-top:.6rem; }
   .msgrow input { flex:1; font:inherit; font-size:.8rem; background:var(--raised);
     color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:.45em .6em; }
