@@ -62,10 +62,113 @@ def incus(*args, ok_fail=False):
     return r
 
 
+REGISTRY = os.path.join(STATE_DIR, "tasks.json")
+IMAGE_ALIAS = "fold-agent-base"
+FORGEJO_URL = "https://git.fold.example"
+
+
+def registry():
+    try:
+        return json.load(open(REGISTRY))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_registry(reg):
+    os.makedirs(STATE_DIR, exist_ok=True)
+    json.dump(reg, open(REGISTRY, "w"), indent=1)
+
+
+def cred(name):
+    m = re.search(rf"{name}=(.*)", open(CREDS).read())
+    return m.group(1).strip() if m else None
+
+
 def instance_name(ws):
+    if ws in registry():
+        return f"fold-{ws.lower()}"
     # Coder incus template convention: coder-<owner>-<workspace>
     owner = api("/api/v2/users/me")["username"]
     return f"coder-{owner.lower()}-{ws.lower()}"
+
+
+def ensure_profile():
+    if incus("profile", "show", "fold-agent", ok_fail=True).returncode == 0:
+        return
+    incus("profile", "create", "fold-agent")
+    incus("profile", "set", "fold-agent", "security.nesting=true",
+          "security.syscalls.intercept.mknod=true",
+          "security.syscalls.intercept.setxattr=true")
+    incus("profile", "device", "add", "fold-agent", "root", "disk",
+          "pool=default", "path=/")
+    incus("profile", "device", "add", "fold-agent", "eth0", "nic",
+          "network=incusbr0", "security.acls=fold-egress")
+
+
+OPENCODE_CONFIG = json.dumps({
+    "$schema": "https://opencode.ai/config.json",
+    "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
+    "provider": {"llamaswap": {
+        "npm": "@ai-sdk/openai-compatible", "name": "llamaswap",
+        "options": {"baseURL": "https://inference.fold.example/v1",
+                    "apiKey": "caddy-injected"},
+        "models": {"glm53-flash": {"name": "GLM 5.3 Flash"}}}},
+    "model": "llamaswap/glm53-flash",
+})
+
+
+def native_dispatch(flavor, prompt, mem_gib=None, ctx=None):
+    """Provision a fold-native agent: golden image, no Coder involved."""
+    ensure_profile()
+    name = f"task-{int(time.time()) % 100000}"
+    inst = f"fold-{name}"
+    author = cred("FOLD_ALPHA_TOKEN")
+    env = {
+        "FORGEJO_URL": FORGEJO_URL,
+        "FORGEJO_REPO": "you/fold-playground",
+        "FORGEJO_TOKEN": author,
+        "NTFY_URL": "https://ntfy.fold.example",
+        "NTFY_TOKEN": cred("FOLD_NTFY_TOKEN"),
+        "FOLD_WORKSPACE": name,
+        "GIT_AUTHOR_NAME": "fold-alpha",
+        "GIT_AUTHOR_EMAIL": "fold-alpha@fold.example",
+        "GIT_COMMITTER_NAME": "fold-alpha",
+        "GIT_COMMITTER_EMAIL": "fold-alpha@fold.example",
+    }
+    repo = f"https://fold-alpha:{author}@git.fold.example/you/fold-playground.git"
+    if flavor == "shepherd":
+        repo = f"https://fold-alpha:{author}@git.fold.example/you/fold.git"
+        env.update(FOLD_BOARD_URL="http://10.0.0.1:7070",
+                   FOLD_BOARD_TOKEN=cred("FOLD_BOARD_TOKEN"),
+                   FOLD_CTX=name)
+    need = mem_gib or learned_footprint_gib(flavor) or 2.0
+    incus("init", IMAGE_ALIAS, inst, "--profile", "fold-agent")
+    incus("storage", "volume", "create", "default", f"{inst}-home")
+    incus("config", "device", "add", inst, "home", "disk",
+          "pool=default", f"source={inst}-home", "path=/home/coder")
+    incus("config", "set", inst,
+          f"limits.memory={max(2, int(need * 2))}GiB",
+          "limits.cpu=2")
+    for k, v in (("prompt", prompt), ("repo", repo),
+                 ("env", json.dumps(env)),
+                 ("opencode_config", OPENCODE_CONFIG)):
+        incus("config", "set", inst, f"user.fold_{k}", v)
+    incus("start", inst)
+    reg = registry()
+    reg[name] = {"flavor": flavor, "created": int(time.time()),
+                 "prompt": prompt, "ctx": ctx}
+    save_registry(reg)
+    if ctx:
+        ctx_file = os.path.join(STATE_DIR, "ctx.json")
+        try:
+            m = json.load(open(ctx_file))
+        except (FileNotFoundError, json.JSONDecodeError):
+            m = {}
+        m[name] = ctx
+        json.dump(m, open(ctx_file, "w"), indent=1)
+    print(f"dispatched {name} (native {flavor}, instance {inst}, "
+          f"mem cap {max(2, int(need * 2))}GiB"
+          + (f", ctx {ctx}" if ctx else "") + ")")
 
 
 def get_tasks():
@@ -75,6 +178,11 @@ def get_tasks():
 
 
 def cmd_tasks():
+    nat = native_running()
+    for name, meta in sorted(registry().items(),
+                             key=lambda kv: -kv[1]["created"]):
+        st = nat.get(name, "STOPPED")
+        print(f"{name:24} ws={st.lower():10} native/{meta['flavor']}")
     for t in get_tasks():
         state = (t.get("current_state") or {}).get("state", "-")
         print(f"{t['name']:24} ws={t['workspace_status']:10} "
@@ -128,8 +236,22 @@ def frozen_workspaces():
     out = set()
     for line in (r.stdout or "").splitlines():
         name, _, status = line.partition(",")
-        if status == "FROZEN" and name.count("-") >= 2:
+        if status != "FROZEN":
+            continue
+        if name.startswith("fold-"):
+            out.add(name[5:])
+        elif name.count("-") >= 2:
             out.add(name.split("-", 2)[2])
+    return out
+
+
+def native_running():
+    r = incus("list", "--format", "csv", "-c", "ns", ok_fail=True)
+    out = {}
+    for line in (r.stdout or "").splitlines():
+        name, _, status = line.partition(",")
+        if name.startswith("fold-task-"):
+            out[name[5:]] = status
     return out
 
 
@@ -137,9 +259,20 @@ def cmd_dispatch(template, prompt, mem_gib=None, ctx=None):
     # Admission control: inference slots (max working) + RAM headroom.
     # Frozen instances hold no slot: zero CPU, zero inference.
     frozen = frozen_workspaces()
+    nat = native_running()
     working = sum(1 for t in get_tasks()
                   if t["workspace_status"] == "running"
                   and t["workspace_name"].lower() not in frozen)
+    working += sum(1 for st in nat.values() if st == "RUNNING")
+    if template in ("agent", "shepherd"):
+        need = mem_gib or learned_footprint_gib(template) or 2.0
+        avail = host_available_gib()
+        if working >= MAX_WORKING:
+            sys.exit(f"admission: {working} already working (max {MAX_WORKING})")
+        if avail - 2.0 < need:
+            sys.exit(f"admission: expects {need:.1f} GiB, host has "
+                     f"{avail:.1f} GiB (2 GiB reserve)")
+        return native_dispatch(template, prompt, mem_gib=mem_gib, ctx=ctx)
     if working >= MAX_WORKING:
         sys.exit(f"admission: {working} tasks already working "
                  f"(max {MAX_WORKING}); queue it or raise FOLD_MAX_WORKING")
@@ -230,6 +363,10 @@ def cmd_resume(ws):
 
 
 def cmd_start(ws):
+    if ws in registry():
+        incus("start", f"fold-{ws.lower()}")
+        print(f"{ws}: started (native)")
+        return
     w = api(f"/api/v2/users/me/workspace/{ws}")
     api(f"/api/v2/workspaces/{w['id']}/builds", "POST",
         {"transition": "start"})
@@ -238,6 +375,13 @@ def cmd_start(ws):
 
 def cmd_stop(ws):
     # End-of-task lifecycle, not failure handling: home volume persists.
+    reg = registry()
+    if ws in reg:
+        rec = record_memstats(ws, reg[ws].get("flavor", "agent"))
+        incus("stop", f"fold-{ws.lower()}", ok_fail=True)
+        peak = f", anon peak {rec['anon_peak_gib']} GiB recorded" if rec else ""
+        print(f"{ws}: stopped (native){peak}")
+        return
     w = api(f"/api/v2/users/me/workspace/{ws}")
     template = w.get("template_name", "")
     rec = record_memstats(ws, template)

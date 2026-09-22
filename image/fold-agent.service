@@ -1,0 +1,19 @@
+[Unit]
+Description=fold agent (agentapi + harness)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=coder
+Environment=HOME=/home/coder
+# The per-task home volume arrives root-owned; hand it to the agent user
+# before starting (the + prefix runs this step as root).
+ExecStartPre=+/bin/sh -c 'chown coder:coder /home/coder && chown -R coder:coder /home/coder/.config 2>/dev/null || true'
+ExecStart=/usr/local/bin/fold-boot.sh
+Restart=on-failure
+RestartSec=5
+OOMScoreAdjust=-500
+SyslogIdentifier=fold-agent
+
+[Install]
+WantedBy=multi-user.target

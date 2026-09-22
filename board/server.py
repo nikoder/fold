@@ -197,7 +197,7 @@ def incus_instances():
         return []
     out = []
     for i in json.loads(r.stdout):
-        if not i["name"].startswith("coder-"):
+        if not i["name"].startswith(("coder-", "fold-")):
             continue
         mem = ((i.get("state") or {}).get("memory") or {}).get("usage", 0)
         out.append({"name": i["name"], "status": i["status"],
@@ -212,8 +212,13 @@ def state():
     fleet = incus_instances()
     # Coder doesn't know about incus freeze: overlay it. A frozen task is
     # not working (zero CPU, zero inference) and must not hold a slot.
-    frozen_ws = {f["name"].split("-", 2)[2] for f in fleet
+    frozen_ws = {(f["name"][5:] if f["name"].startswith("fold-")
+                  else f["name"].split("-", 2)[2])
+                 for f in fleet
                  if f["status"] == "Frozen" and f["name"].count("-") >= 2}
+    inst_state = {(f["name"][5:] if f["name"].startswith("fold-")
+                   else f["name"].split("-", 2)[2]): f["status"]
+                  for f in fleet if f["name"].count("-") >= 2}
     slim = [{
         "name": t["name"],
         "ctx": ctx.get(t["name"]),
@@ -227,6 +232,32 @@ def state():
         "task_state": (t.get("current_state") or {}).get("state"),
         "updated": t.get("updated_at", ""),
     } for t in tasks]
+    # fold-native tasks: registry identity + live incus/agentapi state.
+    try:
+        reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
+    except (FileNotFoundError, json.JSONDecodeError):
+        reg = {}
+    for name, meta in reg.items():
+        st = inst_state.get(name.lower(), "Stopped")
+        ws_status = {"Running": "running", "Frozen": "running",
+                     "Stopped": "stopped"}.get(st, st.lower())
+        task_state = None
+        if st == "Running":
+            probe = agentapi(name, "/status")
+            task_state = ({"running": "working", "stable": "idle"}
+                          .get(probe.get("status"), None))
+        slim.append({
+            "name": name, "ctx": meta.get("ctx"),
+            "template": f"native-{meta.get('flavor', 'agent')}",
+            "workspace": name,
+            "prompt": (meta.get("prompt") or "")[:140],
+            "ws_status": ws_status,
+            "frozen": name.lower() in frozen_ws,
+            "agent": "ready" if st == "Running" else None,
+            "task_state": task_state,
+            "updated": "",
+        })
+    slim.sort(key=lambda t: t.get("updated") or "", reverse=True)
     avail = 0.0
     for line in open("/proc/meminfo"):
         if line.startswith("MemAvailable:"):
@@ -311,10 +342,17 @@ def archive_transcripts():
             except (FileNotFoundError, json.JSONDecodeError):
                 tokens = {}
             dirty = False
-            for t in tasks:
-                if t["workspace_status"] != "running":
-                    continue
-                ws = t["workspace_name"]
+            live = [t["workspace_name"] for t in tasks
+                    if t["workspace_status"] == "running"]
+            try:
+                reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
+            except (FileNotFoundError, json.JSONDecodeError):
+                reg = {}
+            running_native = {i["name"][5:] for i in incus_instances()
+                              if i["name"].startswith("fold-")
+                              and i["status"] == "Running"}
+            live += [n for n in reg if n.lower() in running_native]
+            for ws in live:
                 _harvest_tokens(ws, tokens)
                 dirty = True
                 msgs = agentapi(ws, "/messages")
@@ -344,8 +382,9 @@ def instance_ip(ws):
     for i in json.loads(subprocess.run(
             ["incus", "query", "/1.0/instances?recursion=2"],
             capture_output=True, text=True).stdout or "[]"):
-        if i["name"].startswith("coder-") and \
-                i["name"].endswith(f"-{ws.lower()}"):
+        if i["name"] == f"fold-{ws.lower()}" or (
+                i["name"].startswith("coder-") and
+                i["name"].endswith(f"-{ws.lower()}")):
             eth0 = (((i.get("state") or {}).get("network") or {})
                     .get("eth0") or {})
             for a in eth0.get("addresses", []):

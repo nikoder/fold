@@ -112,9 +112,11 @@
   <dialog id="dlg">
     <h4>Dispatch task</h4>
     <select id="tpl">
-      <option value="fold-incus">fold-incus (incus instance)</option>
-      <option value="fold-shepherd">fold-shepherd (planning session — dispatches its own tasks)</option>
-      <option value="tasks-docker">tasks-docker (docker container)</option>
+      <option value="agent">agent (fold-native, golden image)</option>
+      <option value="shepherd">shepherd (fold-native planning session)</option>
+      <option value="fold-incus">fold-incus (Coder, legacy)</option>
+      <option value="fold-shepherd">fold-shepherd (Coder, legacy)</option>
+      <option value="tasks-docker">tasks-docker (Coder, legacy)</option>
     </select>
     <textarea id="prompt" placeholder="Task for the agent — AGENTS.md carries the workflow; write only the work itself."></textarea>
     <div class="drow">

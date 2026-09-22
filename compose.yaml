@@ -24,7 +24,6 @@ services:
       - ./:/app:ro
       - /var/lib/incus/unix.socket:/var/lib/incus/unix.socket
       - ${FOLD_CREDS_DIR:-~/coder-eval}:/creds:ro
-      - fold_state:/state
-
-volumes:
-  fold_state:
+      # One state store shared with host-side foldctl (registry, hands,
+      # tokens, ctx, memstats) — a named volume would split them.
+      - ${FOLD_STATE_DIR_HOST:-~/.local/state/fold}:/state
