@@ -149,10 +149,13 @@ function chip(cls, text) { return `<span class="chip ${cls}">${text}</span>`; }
 function fmtTok(n) { return n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n); }
 function tokChips(t) {
   if (!t.tok) return "";
-  let s = " " + chip("neutral", `${fmtTok(t.tok.input + t.tok.output)} tok`);
-  // token intensity: unusually chatty output is a review-worthy signal
+  // input = context weight (grows as the task grinds); output = generation.
+  let s = " " + chip("neutral", `in ${fmtTok(t.tok.input)} · out ${fmtTok(t.tok.output)}`);
+  // intensity: output rate, time-averaged between harvests. The endpoint
+  // does ~6k tok/min flat out single-stream, so sustained thousands here
+  // means "generating almost continuously" — the runaway signature.
   if (t.tok.out_per_min > 0 && t.ws_status === "running")
-    s += " " + chip(t.tok.out_per_min > 2000 ? "attn" : "neutral", `${fmtTok(t.tok.out_per_min)}/min`);
+    s += " " + chip(t.tok.out_per_min > 2000 ? "attn" : "neutral", `${fmtTok(t.tok.out_per_min)}/min out`);
   return s;
 }
 function stChip(t) {
