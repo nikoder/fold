@@ -1,9 +1,8 @@
 # fold board — run from a checkout of this repo:
 #   docker compose up -d --build
 #
-# Host networking: the board binds 127.0.0.1:7070 on the host (reach it
-# via SSH tunnel or your reverse proxy) and needs to talk to Coder on
-# localhost plus LAN services. Mutations go through foldctl, which needs
+# Host networking: humans enter through the reverse-proxy front door
+# (basic auth); the raw port is deny-by-default for everything else. Mutations go through foldctl, which needs
 # the incus socket.
 services:
   board:

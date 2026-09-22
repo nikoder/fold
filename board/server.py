@@ -6,8 +6,8 @@ shells out to foldctl, so the CLI remains the single audited mutation
 path (and the board inherits admission control and pause-default for
 free).
 
-Binds 127.0.0.1:7070 by default — reach it over your SSH tunnel or via
-a Caddy route later. Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT,
+Human access is the reverse-proxy front door (basic auth + injected
+X-Fold-Human header); loopback and the agent bearer plane also work. Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT,
 FOLD_CODER_URL, FOLD_CODER_TOKEN_FILE, FOLD_MAX_WORKING.
 """
 import json
@@ -231,14 +231,72 @@ def state():
     for line in open("/proc/meminfo"):
         if line.startswith("MemAvailable:"):
             avail = round(int(line.split()[1]) / 2**20, 1)
+    try:
+        tokens = json.load(open(TOKENS_FILE))
+    except (FileNotFoundError, json.JSONDecodeError):
+        tokens = {}
+    for t in slim:
+        t["tok"] = tokens.get(t["workspace"])
     working = sum(1 for t in slim
                   if t["ws_status"] == "running" and not t["frozen"])
+    total_out = sum(v.get("output", 0) for v in tokens.values())
     return {"tasks": slim, "fleet": fleet, "hands": hands(),
             "host": {"avail_gib": avail, "max_working": MAX_WORKING,
-                     "working": working}}
+                     "working": working, "total_output_tokens": total_out}}
 
 
 TRANSCRIPTS = os.path.join(STATE_DIR, "transcripts")
+TOKENS_FILE = os.path.join(STATE_DIR, "tokens.json")
+
+
+def _instance_for(ws):
+    for i in incus_instances():
+        if i["name"].endswith(f"-{ws.lower()}"):
+            return i["name"]
+    return None
+
+
+def _harvest_tokens(ws, tokens):
+    """Sum per-message token usage from the workspace's opencode.db.
+
+    Attribution without a metering proxy: OpenCode records tokens per
+    assistant message; we pull the db (plus WAL) and sum. Totals persist
+    here after the workspace stops; the output rate between snapshots is
+    the "token intensity" review signal.
+    """
+    import sqlite3 as sq
+    inst = _instance_for(ws)
+    if not inst:
+        return
+    tmp = f"/tmp/tok-{ws}"
+    base = f"{inst}/home/coder/.local/share/opencode/opencode.db"
+    for suffix in ("", "-wal", "-shm"):
+        subprocess.run(["incus", "file", "pull", base + suffix,
+                        tmp + ".db" + suffix],
+                       capture_output=True, timeout=60)
+    try:
+        con = sq.connect(f"file:{tmp}.db?mode=ro", uri=True)
+        tin = tout = msgs = 0
+        for (data,) in con.execute("SELECT data FROM message"):
+            try:
+                d = json.loads(data)
+            except json.JSONDecodeError:
+                continue
+            tk = d.get("tokens") or {}
+            if d.get("role") == "assistant" and tk:
+                tin += tk.get("input", 0)
+                tout += tk.get("output", 0)
+                msgs += 1
+        con.close()
+    except Exception:
+        return
+    now = int(time.time())
+    prev = tokens.get(ws)
+    rate = 0
+    if prev and now > prev["t"] and tout >= prev["output"]:
+        rate = round((tout - prev["output"]) * 60 / (now - prev["t"]))
+    tokens[ws] = {"input": tin, "output": tout, "msgs": msgs,
+                  "t": now, "out_per_min": rate}
 
 
 def archive_transcripts():
@@ -248,10 +306,17 @@ def archive_transcripts():
         try:
             d = coder("/api/experimental/tasks?owner=me")
             tasks = d if isinstance(d, list) else d.get("tasks", [])
+            try:
+                tokens = json.load(open(TOKENS_FILE))
+            except (FileNotFoundError, json.JSONDecodeError):
+                tokens = {}
+            dirty = False
             for t in tasks:
                 if t["workspace_status"] != "running":
                     continue
                 ws = t["workspace_name"]
+                _harvest_tokens(ws, tokens)
+                dirty = True
                 msgs = agentapi(ws, "/messages")
                 if "error" in msgs:
                     continue
@@ -259,6 +324,9 @@ def archive_transcripts():
                 json.dump({"archived_at": int(time.time()),
                            "messages": msgs.get("messages", [])},
                           open(os.path.join(TRANSCRIPTS, f"{ws}.json"), "w"))
+            if dirty:
+                os.makedirs(STATE_DIR, exist_ok=True)
+                json.dump(tokens, open(TOKENS_FILE, "w"))
         except Exception:
             pass
         time.sleep(30)

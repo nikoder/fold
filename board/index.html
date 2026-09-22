@@ -146,6 +146,15 @@ const COLS = [
   ["Stopped", (t) => ["stopped","stopping"].includes(t.ws_status)],
 ];
 function chip(cls, text) { return `<span class="chip ${cls}">${text}</span>`; }
+function fmtTok(n) { return n >= 1e6 ? (n/1e6).toFixed(1)+"M" : n >= 1e3 ? (n/1e3).toFixed(1)+"k" : String(n); }
+function tokChips(t) {
+  if (!t.tok) return "";
+  let s = " " + chip("neutral", `${fmtTok(t.tok.input + t.tok.output)} tok`);
+  // token intensity: unusually chatty output is a review-worthy signal
+  if (t.tok.out_per_min > 0 && t.ws_status === "running")
+    s += " " + chip(t.tok.out_per_min > 2000 ? "attn" : "neutral", `${fmtTok(t.tok.out_per_min)}/min`);
+  return s;
+}
 function stChip(t) {
   if (t.frozen) return chip("frozen","frozen");
   if (t.ws_status==="failed") return chip("failed","failed");
@@ -174,7 +183,7 @@ function taskCard(t, colName) {
   const shep = (t.template||"").includes("shepherd");
   return `<div class="card${hand?" hand":""}${shep?" shepherd":""}">
     <div class="t">${t.prompt || t.name}</div>
-    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}</div>
+    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
 
