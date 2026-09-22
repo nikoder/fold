@@ -346,6 +346,18 @@ EOF
   }
 
   device {
+    name = "eth0"
+    type = "nic"
+    properties = {
+      network = "incusbr0"
+      # Egress phase one: "logged, not locked" — every outbound flow is
+      # allowed and logged (kernel/nft log, ACL name in the prefix), so
+      # the real allowlist writes itself before we tighten.
+      "security.acls" = "fold-egress"
+    }
+  }
+
+  device {
     name = "home"
     type = "disk"
     properties = {
