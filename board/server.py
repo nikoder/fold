@@ -152,7 +152,8 @@ def _forward_hands(store):
             ip = instance_ip(session)
             if not ip:
                 continue
-            req = urllib.request.Request(f"http://{ip}:3284/status")
+            req = urllib.request.Request(f"http://{ip}:3284/status",
+                                          headers={"Host": "localhost"})
             with urllib.request.urlopen(req, timeout=5) as r:
                 if json.load(r)["status"] != "stable":
                     continue
@@ -401,7 +402,9 @@ def agentapi(ws, path, body=None):
     req = urllib.request.Request(
         f"http://{ip}:3284{path}",
         data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json"})
+        # newer agentapi rejects non-localhost Host headers; we are the
+        # trusted proxy, so present the one it expects
+        headers={"Content-Type": "application/json", "Host": "localhost"})
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.load(r)

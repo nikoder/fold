@@ -320,7 +320,7 @@ def _agentapi(ip, path, body=None, timeout=10):
     req = urllib.request.Request(
         f"http://{ip}:3284{path}",
         data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", "Host": "localhost"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.load(r)
 

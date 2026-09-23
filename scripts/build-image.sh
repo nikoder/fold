@@ -15,7 +15,11 @@ incus delete -f "$B" 2>/dev/null || true
 # nesting + syscall intercepts match the proven workspace config —
 # without setxattr, journald (xattrs on journal files) never signals
 # ready and the whole boot wedges behind it.
-incus launch -q images:debian/13/cloud "$B" \
+# Base comes from a locally pinned copy (fold-builder-base) — the remote
+# simplestreams download stalls for tens of minutes without any timeout,
+# twice observed. Pin once with:
+#   incus image copy images:debian/13/cloud local: --alias fold-builder-base
+incus launch -q fold-builder-base "$B" \
   -c security.nesting=true \
   -c security.syscalls.intercept.mknod=true \
   -c security.syscalls.intercept.setxattr=true
@@ -32,8 +36,14 @@ incus exec "$B" -- sh -c '
 
 echo "creating coder user…"
 incus exec "$B" -- sh -c '
+  set -e
+  # cloud-init already claimed uid 1000 for its default "debian" user in
+  # this builder — evict it or useradd fails (silently, once upon a time).
+  userdel -r debian 2>/dev/null || true
   id coder >/dev/null 2>&1 || useradd -m -u 1000 -s /bin/bash coder
   echo "coder ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/coder
+  # and stop cloud-init creating default users in task instances
+  printf "users: []\n" > /etc/cloud/cloud.cfg.d/99-fold-no-default-user.cfg
 '
 
 echo "installing agentapi…"
