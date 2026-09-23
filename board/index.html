@@ -30,6 +30,8 @@
   }
   body { margin:0; background:var(--bg); color:var(--ink);
          font-family:"IBM Plex Sans",sans-serif; font-size:.85rem; }
+  /* hidden must beat any display rule (.board's grid was ignoring it) */
+  [hidden] { display:none !important; }
   .topbar { display:flex; align-items:center; gap:1rem; background:var(--surface);
             border-bottom:1px solid var(--line); padding:.65rem 1rem; }
   .wordmark { font-family:"Bricolage Grotesque",sans-serif; font-weight:650; font-size:1.1rem; }
