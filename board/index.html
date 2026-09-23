@@ -63,6 +63,12 @@
     background:transparent; }
   .term { scrollbar-width:thin; scrollbar-color:#333A31 transparent; }
   .archbtn { font-size:.68rem; padding:.3em .6em; align-self:flex-start; }
+  .tabs { display:flex; gap:1.1rem; padding:.55rem 1rem 0; background:var(--surface);
+          border-bottom:1px solid var(--line); }
+  .tab { background:none; border:none; font:inherit; font-weight:600; cursor:pointer;
+         color:var(--soft); padding:.15rem .1rem .45rem; border-bottom:2px solid transparent; }
+  .tab.active { color:var(--ink); border-bottom-color:var(--accent); }
+  .tab:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
   .card { background:var(--surface); border:1px solid var(--line); border-radius:8px;
           padding:.6rem .7rem; display:flex; flex-direction:column; gap:.4rem; }
   .card.hand { border-color:var(--attn); box-shadow:0 0 0 1px var(--attn); }
@@ -113,17 +119,21 @@
   <div class="topbar">
     <span class="wordmark">fold</span>
     <div class="stats" id="stats"></div>
-    <button class="quiet" id="archiveBtn">Archive</button>
     <button id="dispatchBtn">Dispatch task</button>
   </div>
+  <nav class="tabs">
+    <button class="tab active" data-view="board">Board</button>
+    <button class="tab" data-view="archive" id="archTab">Archive</button>
+    <button class="tab" data-view="fleet">Fleet</button>
+  </nav>
   <main>
     <div class="board" id="board"></div>
     <div id="archive" hidden>
-      <h2 style="margin-top:.2rem;">Archive</h2>
       <table id="archTable"></table>
     </div>
-    <h2>Fleet</h2>
-    <table id="fleet"></table>
+    <div id="fleetView" hidden>
+      <table id="fleet"></table>
+    </div>
   </main>
 
   <dialog id="dlg">
@@ -215,13 +225,15 @@ function taskCard(t, colName) {
     <div class="a">${acts.join("")}</div></div>`;
 }
 
-let visiting = null, visitTimer = null, archiveOpen = false;
-function toggleArchive(open) {
-  archiveOpen = open === undefined ? !archiveOpen : open;
-  $("#board").hidden = archiveOpen;
-  $("#archive").hidden = !archiveOpen;
+let visiting = null, visitTimer = null;
+const VIEWS = {board: "#board", archive: "#archive", fleet: "#fleetView"};
+function setView(v) {
+  for (const [name, sel] of Object.entries(VIEWS)) $(sel).hidden = name !== v;
+  document.querySelectorAll(".tab").forEach(t =>
+    t.classList.toggle("active", t.dataset.view === v));
 }
-$("#archiveBtn").onclick = () => toggleArchive();
+document.querySelectorAll(".tab").forEach(t =>
+  t.onclick = () => setView(t.dataset.view));
 async function pollVisit() {
   if (!visiting) return;
   const d = await fetch(`/api/task/${visiting}/messages`).then(r=>r.json());
@@ -302,13 +314,16 @@ async function refresh() {
     chip("neutral", `host ${s.host.avail_gib} GiB free`) +
     (s.hands.length ? chip("attn", `✋ ${s.hands.length}`) : "") +
     (s.fleet.some(f=>f.status==="Frozen") ? chip("frozen","frozen present") : "");
+  // preserve column scroll across re-renders: a jumped list under a
+  // poised cursor once restarted a container by accident
+  const scrolls = [...document.querySelectorAll("#board .cards")].map(el => el.scrollTop);
   $("#board").innerHTML = COLS.map(([name, pred]) => {
     let items = s.tasks.filter(pred);
     let extra = "";
     if (name === "Stopped" && items.length > 5) {
       const n = items.length - 5;
       items = items.slice(0, 5);
-      extra = `<button class="quiet archbtn" onclick="toggleArchive(true)">→ archive (${n} older)</button>`;
+      extra = `<button class="quiet archbtn" onclick="setView('archive')">→ archive (${n} older)</button>`;
     }
     let cards = items.map(t => taskCard(t, name)).join("");
     if (name === "Needs you") cards = s.hands.map(handCard).join("") + cards;
@@ -316,8 +331,11 @@ async function refresh() {
     return `<div class="col${name==="Needs you"?" attn":""}"><h3>${name}${name==="Stopped"?` <span>${s.tasks.filter(pred).length}</span>`:""}</h3>
             <div class="cards">${cards}</div></div>`;
   }).join("");
+  [...document.querySelectorAll("#board .cards")].forEach((el, i) => {
+    if (scrolls[i]) el.scrollTop = scrolls[i];
+  });
   const stopped = s.tasks.filter(t => ["stopped","stopping"].includes(t.ws_status));
-  $("#archiveBtn").textContent = `Archive (${stopped.length})`;
+  $("#archTab").textContent = `Archive (${stopped.length})`;
   $("#archTable").innerHTML =
     `<tr><th>task</th><th>kind</th><th>prompt</th><th>tokens</th><th>last active</th><th></th></tr>` +
     stopped.map(t => `<tr>

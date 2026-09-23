@@ -493,10 +493,14 @@ class H(BaseHTTPRequestHandler):
             try:
                 while True:
                     s = json.dumps(state())
-                    if s != last:
+                    # compare with volatile timestamps masked, so a mere
+                    # harvest tick doesn't re-render the client (a jumped
+                    # list under a poised cursor is a misclick hazard)
+                    cmp = re.sub(r'"t": ?\d+', '"t":0', s)
+                    if cmp != last:
                         self.wfile.write(f"data: {s}\n\n".encode())
                         self.wfile.flush()
-                        last = s
+                        last = cmp
                     time.sleep(3)
             except (BrokenPipeError, ConnectionResetError):
                 return
