@@ -105,29 +105,63 @@ def ensure_profile():
           "network=incusbr0", "security.acls=fold-egress")
 
 
-# Inference endpoint is configurable so the fold can ride a different
-# server (e.g. lemonade's OpenAI-compatible /api/v1 during llamaswap
-# downtime): FOLD_LLM_URL, FOLD_LLM_MODEL, FOLD_LLM_KEY.
-LLM_URL = os.environ.get("FOLD_LLM_URL", "https://inference.fold.example/v1")
-LLM_MODEL = os.environ.get("FOLD_LLM_MODEL", "glm53-flash")
-LLM_KEY = os.environ.get("FOLD_LLM_KEY", "caddy-injected")
+# Inference is selectable per task from the endpoint registry
+# (STATE_DIR/endpoints.json: names -> url, key or key_from, models,
+# plus a _default endpoint+model pair). FOLD_LLM_* env still overrides
+# everything for one-off runs.
+ENDPOINTS_FILE = os.path.join(STATE_DIR, "endpoints.json")
 
 
-def opencode_config():
+def endpoints():
+    try:
+        return json.load(open(ENDPOINTS_FILE))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {"_default": {"endpoint": "llamaswap", "model": "glm53-flash"},
+                "llamaswap": {"url": "https://inference.fold.example/v1",
+                              "key": "caddy-injected",
+                              "models": ["glm53-flash"]}}
+
+
+def resolve_llm(llm=None, model=None):
+    """(url, key, model, endpoint_name) for a dispatch."""
+    if os.environ.get("FOLD_LLM_URL"):
+        return (os.environ["FOLD_LLM_URL"],
+                os.environ.get("FOLD_LLM_KEY", "caddy-injected"),
+                model or os.environ.get("FOLD_LLM_MODEL", "glm53-flash"),
+                "env")
+    eps = endpoints()
+    default = eps.get("_default", {})
+    name = llm or default.get("endpoint")
+    ep = eps.get(name)
+    if not ep:
+        sys.exit(f"unknown inference endpoint {name!r}; "
+                 f"known: {[k for k in eps if not k.startswith('_')]}")
+    m = model or (default.get("model") if name == default.get("endpoint")
+                  else None) or (ep.get("models") or ["?"])[0]
+    if ep.get("models") and m not in ep["models"]:
+        sys.exit(f"model {m!r} not offered by {name}; has: {ep['models']}")
+    key = ep.get("key") or (cred(ep["key_from"]) if ep.get("key_from")
+                            else "caddy-injected")
+    return ep["url"], key, m, name
+
+
+def opencode_config(url, key, model):
     return json.dumps({
         "$schema": "https://opencode.ai/config.json",
         "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
         "provider": {"fold": {
             "npm": "@ai-sdk/openai-compatible", "name": "fold",
-            "options": {"baseURL": LLM_URL, "apiKey": LLM_KEY},
-            "models": {LLM_MODEL: {"name": LLM_MODEL}}}},
-        "model": f"fold/{LLM_MODEL}",
+            "options": {"baseURL": url, "apiKey": key},
+            "models": {model: {"name": model}}}},
+        "model": f"fold/{model}",
     })
 
 
-def native_dispatch(flavor, prompt, mem_gib=None, ctx=None):
+def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
+                    llm=None, model=None):
     """Provision a fold-native agent: golden image, no Coder involved."""
     ensure_profile()
+    url, key, model, ep_name = resolve_llm(llm, model)
     name = f"task-{int(time.time()) % 100000}"
     inst = f"fold-{name}"
     author = cred("FOLD_ALPHA_TOKEN")
@@ -159,12 +193,13 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None):
           "limits.cpu=2")
     for k, v in (("prompt", prompt), ("repo", repo),
                  ("env", json.dumps(env)),
-                 ("opencode_config", opencode_config())):
+                 ("opencode_config", opencode_config(url, key, model))):
         incus("config", "set", inst, f"user.fold_{k}", v)
     incus("start", inst)
     reg = registry()
     reg[name] = {"flavor": flavor, "created": int(time.time()),
-                 "prompt": prompt, "ctx": ctx}
+                 "prompt": prompt, "ctx": ctx,
+                 "llm": ep_name, "model": model}
     save_registry(reg)
     if ctx:
         ctx_file = os.path.join(STATE_DIR, "ctx.json")
@@ -263,7 +298,8 @@ def native_running():
     return out
 
 
-def cmd_dispatch(template, prompt, mem_gib=None, ctx=None):
+def cmd_dispatch(template, prompt, mem_gib=None, ctx=None,
+                 llm=None, model=None):
     # Admission control: inference slots (max working) + RAM headroom.
     # Frozen instances hold no slot: zero CPU, zero inference.
     frozen = frozen_workspaces()
@@ -280,7 +316,8 @@ def cmd_dispatch(template, prompt, mem_gib=None, ctx=None):
         if avail - 2.0 < need:
             sys.exit(f"admission: expects {need:.1f} GiB, host has "
                      f"{avail:.1f} GiB (2 GiB reserve)")
-        return native_dispatch(template, prompt, mem_gib=mem_gib, ctx=ctx)
+        return native_dispatch(template, prompt, mem_gib=mem_gib, ctx=ctx,
+                               llm=llm, model=model)
     if working >= MAX_WORKING:
         sys.exit(f"admission: {working} tasks already working "
                  f"(max {MAX_WORKING}); queue it or raise FOLD_MAX_WORKING")
@@ -445,13 +482,19 @@ def main():
     elif cmd == "memstats":
         cmd_memstats()
     elif cmd == "dispatch" and len(rest) >= 2:
-        mem, ctx = None, None
-        while rest and rest[0] in ("--mem", "--ctx"):
-            if rest[0] == "--mem":
-                mem, rest = float(rest[1]), rest[2:]
+        mem, ctx, llm, model = None, None, None, None
+        while rest and rest[0] in ("--mem", "--ctx", "--llm", "--model"):
+            flag, val, rest = rest[0], rest[1], rest[2:]
+            if flag == "--mem":
+                mem = float(val)
+            elif flag == "--ctx":
+                ctx = val
+            elif flag == "--llm":
+                llm = val
             else:
-                ctx, rest = rest[1], rest[2:]
-        cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem, ctx=ctx)
+                model = val
+        cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem, ctx=ctx,
+                     llm=llm, model=model)
     elif cmd in ("pause", "resume", "stop", "start") and len(rest) == 1:
         {"pause": cmd_pause, "resume": cmd_resume,
          "stop": cmd_stop, "start": cmd_start}[cmd](rest[0])

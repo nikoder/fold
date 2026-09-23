@@ -20,10 +20,28 @@ REPO=${FOLD_REPO:-you/fold-playground}
 FORGEJO=${FOLD_FORGEJO:-https://git.fold.example}
 TOKEN=$(grep -oP 'BELLWETHER_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
 CTR="bellwether-pr$PR"
-# Inference endpoint (override during llamaswap downtime, e.g. lemonade):
-MODEL=${FOLD_REVIEW_MODEL:-glm53-flash}
-LLM_URL=${FOLD_REVIEW_URL:-https://inference.fold.example/v1/chat/completions}
-LLM_KEY=${FOLD_REVIEW_KEY:-caddy-injected}
+# Inference endpoint: FOLD_REVIEW_* env wins; otherwise the fold's
+# endpoint registry default; otherwise llamaswap.
+STATE=${FOLD_STATE_DIR:-$HOME/.local/state/fold}
+if [ -z "${FOLD_REVIEW_URL:-}" ] && [ -f "$STATE/endpoints.json" ]; then
+  eval "$(python3 - "$STATE/endpoints.json" "${FOLD_CREDS:-$HOME/coder-eval/bellwether.env}" <<'PY'
+import json, re, sys
+eps = json.load(open(sys.argv[1]))
+d = eps.get("_default", {})
+ep = eps.get(d.get("endpoint"), {})
+key = ep.get("key") or ""
+if not key and ep.get("key_from"):
+    m = re.search(rf"{ep['key_from']}=(.*)", open(sys.argv[2]).read())
+    key = m.group(1).strip() if m else ""
+print(f"REG_URL='{ep.get('url','')}/chat/completions'")
+print(f"REG_MODEL='{d.get('model','')}'")
+print(f"REG_KEY='{key}'")
+PY
+)"
+fi
+MODEL=${FOLD_REVIEW_MODEL:-${REG_MODEL:-glm53-flash}}
+LLM_URL=${FOLD_REVIEW_URL:-${REG_URL:-https://inference.fold.example/v1/chat/completions}}
+LLM_KEY=${FOLD_REVIEW_KEY:-${REG_KEY:-caddy-injected}}
 
 PRJSON=$(curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR")
 TITLE=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["title"])' "$PRJSON")

@@ -135,6 +135,10 @@
       <option value="fold-shepherd">fold-shepherd (Coder, legacy)</option>
       <option value="tasks-docker">tasks-docker (Coder, legacy)</option>
     </select>
+    <div style="display:flex; gap:.5rem;">
+      <select id="llmSel" style="flex:1;" aria-label="Inference endpoint"></select>
+      <select id="modelSel" style="flex:2;" aria-label="Model"></select>
+    </div>
     <textarea id="prompt" placeholder="Task for the agent — AGENTS.md carries the workflow; write only the work itself."></textarea>
     <div class="drow">
       <button class="quiet" id="cancel">Cancel</button>
@@ -207,7 +211,7 @@ function taskCard(t, colName) {
   const shep = (t.template||"").includes("shepherd");
   return `<div class="card${hand?" hand":""}${shep?" shepherd":""}">
     <div class="t">${t.prompt || t.name}</div>
-    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}</div>
+    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
 
@@ -274,8 +278,25 @@ function handCard(h) {
     <div class="m">${chip("attn", when)}${h.workspace ? " " + chip("neutral", h.workspace) : ""}${h.forwarded ? " " + chip("frozen", "→ " + h.forwarded.to) : ""}</div>
     <div class="a"><button class="quiet" onclick="resolveHand('${h.id}')">Resolve</button></div></div>`;
 }
+let endpoints = {}, llmDefault = {};
+function fillLlmSelects() {
+  const lsel = $("#llmSel"), msel = $("#modelSel");
+  const names = Object.keys(endpoints);
+  if (!names.length) return;
+  const keep = lsel.value;
+  lsel.innerHTML = names.map(n =>
+    `<option value="${n}"${n===(keep||llmDefault.endpoint)?" selected":""}>${n}${n===llmDefault.endpoint?" (default)":""}</option>`).join("");
+  const cur = lsel.value;
+  const keepM = msel.value;
+  msel.innerHTML = (endpoints[cur]||[]).map(m =>
+    `<option value="${m}"${m===(keepM||llmDefault.model)?" selected":""}>${m}</option>`).join("");
+}
+document.addEventListener("change", (e) => { if (e.target.id === "llmSel") { $("#modelSel").value=""; fillLlmSelects(); } });
+
 async function refresh() {
   const s = await fetch("/api/state").then(r=>r.json());
+  endpoints = s.endpoints || {}; llmDefault = s.llm_default || {};
+  if (!$("#taskdlg").open) fillLlmSelects();
   $("#stats").innerHTML =
     chip("working", `${s.host.working}/${s.host.max_working} working`) +
     chip("neutral", `host ${s.host.avail_gib} GiB free`) +
@@ -324,7 +345,9 @@ async function refresh() {
 $("#dispatchBtn").onclick = () => $("#dlg").showModal();
 $("#cancel").onclick = () => $("#dlg").close();
 $("#go").onclick = async () => {
-  const body = {template: $("#tpl").value, prompt: $("#prompt").value.trim()};
+  const body = {template: $("#tpl").value, prompt: $("#prompt").value.trim(),
+                llm: $("#llmSel").value || undefined,
+                model: $("#modelSel").value || undefined};
   if (!body.prompt) return toast("write the task first");
   $("#dlg").close(); toast("dispatching…");
   const r = await fetch("/api/dispatch", {method:"POST",

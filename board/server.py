@@ -249,6 +249,7 @@ def state():
                           .get(probe.get("status"), None))
         slim.append({
             "name": name, "ctx": meta.get("ctx"),
+            "model": meta.get("model"), "llm": meta.get("llm"),
             "template": f"native-{meta.get('flavor', 'agent')}",
             "workspace": name,
             "prompt": (meta.get("prompt") or "")[:140],
@@ -273,7 +274,14 @@ def state():
     working = sum(1 for t in slim
                   if t["ws_status"] == "running" and not t["frozen"])
     total_out = sum(v.get("output", 0) for v in tokens.values())
+    try:
+        eps = json.load(open(os.path.join(STATE_DIR, "endpoints.json")))
+    except (FileNotFoundError, json.JSONDecodeError):
+        eps = {}
+    ep_summary = {k: v.get("models", []) for k, v in eps.items()
+                  if not k.startswith("_")}
     return {"tasks": slim, "fleet": fleet, "hands": hands(),
+            "endpoints": ep_summary, "llm_default": eps.get("_default", {}),
             "host": {"avail_gib": avail, "max_working": MAX_WORKING,
                      "working": working, "total_output_tokens": total_out}}
 
@@ -519,6 +527,12 @@ class H(BaseHTTPRequestHandler):
             args = ["dispatch"]
             if body.get("ctx"):
                 args += ["--ctx", str(body["ctx"])[:64]]
+            # endpoint/model pass through; foldctl validates against the
+            # registry, so the agent plane can pick models but not URLs
+            if body.get("llm"):
+                args += ["--llm", str(body["llm"])[:64]]
+            if body.get("model"):
+                args += ["--model", str(body["model"])[:128]]
             return self._send(200, foldctl(*args, tpl, prompt))
         if self.path == "/api/resolve":
             if not body.get("id"):
