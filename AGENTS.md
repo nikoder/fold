@@ -22,7 +22,7 @@ your session id is `FOLD_CTX`):
     curl -s -X POST "$FOLD_BOARD_URL/api/dispatch" \
       -H "Authorization: Bearer $FOLD_BOARD_TOKEN" \
       -H "Content-Type: application/json" \
-      -d '{"template":"fold-incus","prompt":"<task, written for the
+      -d '{"template":"agent","prompt":"<task, written for the
            agent: only the work itself — AGENTS.md in its repo carries
            the workflow>","ctx":"'"$FOLD_CTX"'"}'
 
