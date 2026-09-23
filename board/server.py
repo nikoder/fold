@@ -256,7 +256,8 @@ def state():
             "frozen": name.lower() in frozen_ws,
             "agent": "ready" if st == "Running" else None,
             "task_state": task_state,
-            "updated": "",
+            "updated": time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                     time.gmtime(meta.get("created", 0))),
         })
     slim.sort(key=lambda t: t.get("updated") or "", reverse=True)
     avail = 0.0

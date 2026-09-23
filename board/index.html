@@ -52,7 +52,10 @@
   .col h3 { font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.1em;
             text-transform:uppercase; color:var(--soft); font-weight:500; margin:.2rem 0 .6rem; }
   .col.attn h3 { color:var(--attn); }
-  .cards { display:flex; flex-direction:column; gap:.6rem; }
+  /* columns scroll internally so the board never pushes Fleet off-screen */
+  .cards { display:flex; flex-direction:column; gap:.6rem;
+           max-height:56vh; overflow-y:auto; }
+  .archbtn { font-size:.68rem; padding:.3em .6em; align-self:flex-start; }
   .card { background:var(--surface); border:1px solid var(--line); border-radius:8px;
           padding:.6rem .7rem; display:flex; flex-direction:column; gap:.4rem; }
   .card.hand { border-color:var(--attn); box-shadow:0 0 0 1px var(--attn); }
@@ -196,7 +199,7 @@ function taskCard(t, colName) {
     <div class="a">${acts.join("")}</div></div>`;
 }
 
-let visiting = null, visitTimer = null;
+let visiting = null, visitTimer = null, showArchive = false;
 async function pollVisit() {
   if (!visiting) return;
   const d = await fetch(`/api/task/${visiting}/messages`).then(r=>r.json());
@@ -261,10 +264,19 @@ async function refresh() {
     (s.hands.length ? chip("attn", `✋ ${s.hands.length}`) : "") +
     (s.fleet.some(f=>f.status==="Frozen") ? chip("frozen","frozen present") : "");
   $("#board").innerHTML = COLS.map(([name, pred]) => {
-    let cards = s.tasks.filter(pred).map(t => taskCard(t, name)).join("");
+    let items = s.tasks.filter(pred);
+    let extra = "";
+    if (name === "Stopped" && !showArchive && items.length > 5) {
+      const n = items.length - 5;
+      items = items.slice(0, 5);
+      extra = `<button class="quiet archbtn" onclick="showArchive=true;refresh()">show ${n} archived</button>`;
+    } else if (name === "Stopped" && showArchive && items.length > 5) {
+      extra = `<button class="quiet archbtn" onclick="showArchive=false;refresh()">hide archive</button>`;
+    }
+    let cards = items.map(t => taskCard(t, name)).join("");
     if (name === "Needs you") cards = s.hands.map(handCard).join("") + cards;
-    cards = cards || `<div class="card" style="color:var(--soft)">—</div>`;
-    return `<div class="col${name==="Needs you"?" attn":""}"><h3>${name}</h3>
+    cards = (cards || `<div class="card" style="color:var(--soft)">—</div>`) + extra;
+    return `<div class="col${name==="Needs you"?" attn":""}"><h3>${name}${name==="Stopped"?` <span>${s.tasks.filter(pred).length}</span>`:""}</h3>
             <div class="cards">${cards}</div></div>`;
   }).join("");
   $("#fleet").innerHTML =
