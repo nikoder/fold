@@ -52,9 +52,10 @@
   .col h3 { font-family:"IBM Plex Mono",monospace; font-size:.66rem; letter-spacing:.1em;
             text-transform:uppercase; color:var(--soft); font-weight:500; margin:.2rem 0 .6rem; }
   .col.attn h3 { color:var(--attn); }
-  /* columns scroll internally so the board never pushes Fleet off-screen */
+  /* each view owns its whole tab: columns get the full viewport height,
+     scrolling internally */
   .cards { display:flex; flex-direction:column; gap:.6rem;
-           max-height:56vh; overflow-y:auto;
+           max-height:calc(100vh - 11rem); overflow-y:auto;
            scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
   .cards::-webkit-scrollbar, .term::-webkit-scrollbar { width:8px; }
   .cards::-webkit-scrollbar-thumb, .term::-webkit-scrollbar-thumb {
@@ -122,7 +123,7 @@
     <button id="dispatchBtn">Dispatch task</button>
   </div>
   <nav class="tabs">
-    <button class="tab active" data-view="board">Board</button>
+    <button class="tab active" data-view="board" id="boardTab">Board</button>
     <button class="tab" data-view="archive" id="archTab">Archive</button>
     <button class="tab" data-view="fleet">Fleet</button>
   </nav>
@@ -336,6 +337,7 @@ async function refresh() {
   });
   const stopped = s.tasks.filter(t => ["stopped","stopping"].includes(t.ws_status));
   $("#archTab").textContent = `Archive (${stopped.length})`;
+  $("#boardTab").textContent = s.hands.length ? "Board ✋" : "Board";
   $("#archTable").innerHTML =
     `<tr><th>task</th><th>kind</th><th>prompt</th><th>tokens</th><th>last active</th><th></th></tr>` +
     stopped.map(t => `<tr>
