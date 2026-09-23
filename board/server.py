@@ -308,7 +308,10 @@ def _harvest_tokens(ws, tokens):
                         tmp + ".db" + suffix],
                        capture_output=True, timeout=60)
     try:
-        con = sq.connect(f"file:{tmp}.db?mode=ro", uri=True)
+        # writable: these are our throwaway copies, and read-only mode
+        # cannot replay the WAL — a fresh session's data lives there
+        # entirely until opencode checkpoints
+        con = sq.connect(f"{tmp}.db")
         tin = tout = msgs = 0
         for (data,) in con.execute("SELECT data FROM message"):
             try:
