@@ -54,7 +54,14 @@
   .col.attn h3 { color:var(--attn); }
   /* columns scroll internally so the board never pushes Fleet off-screen */
   .cards { display:flex; flex-direction:column; gap:.6rem;
-           max-height:56vh; overflow-y:auto; }
+           max-height:56vh; overflow-y:auto;
+           scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+  .cards::-webkit-scrollbar, .term::-webkit-scrollbar { width:8px; }
+  .cards::-webkit-scrollbar-thumb, .term::-webkit-scrollbar-thumb {
+    background:var(--line); border-radius:4px; }
+  .cards::-webkit-scrollbar-track, .term::-webkit-scrollbar-track {
+    background:transparent; }
+  .term { scrollbar-width:thin; scrollbar-color:#333A31 transparent; }
   .archbtn { font-size:.68rem; padding:.3em .6em; align-self:flex-start; }
   .card { background:var(--surface); border:1px solid var(--line); border-radius:8px;
           padding:.6rem .7rem; display:flex; flex-direction:column; gap:.4rem; }
@@ -106,10 +113,15 @@
   <div class="topbar">
     <span class="wordmark">fold</span>
     <div class="stats" id="stats"></div>
+    <button class="quiet" id="archiveBtn">Archive</button>
     <button id="dispatchBtn">Dispatch task</button>
   </div>
   <main>
     <div class="board" id="board"></div>
+    <div id="archive" hidden>
+      <h2 style="margin-top:.2rem;">Archive</h2>
+      <table id="archTable"></table>
+    </div>
     <h2>Fleet</h2>
     <table id="fleet"></table>
   </main>
@@ -199,7 +211,13 @@ function taskCard(t, colName) {
     <div class="a">${acts.join("")}</div></div>`;
 }
 
-let visiting = null, visitTimer = null, showArchive = false;
+let visiting = null, visitTimer = null, archiveOpen = false;
+function toggleArchive(open) {
+  archiveOpen = open === undefined ? !archiveOpen : open;
+  $("#board").hidden = archiveOpen;
+  $("#archive").hidden = !archiveOpen;
+}
+$("#archiveBtn").onclick = () => toggleArchive();
 async function pollVisit() {
   if (!visiting) return;
   const d = await fetch(`/api/task/${visiting}/messages`).then(r=>r.json());
@@ -266,12 +284,10 @@ async function refresh() {
   $("#board").innerHTML = COLS.map(([name, pred]) => {
     let items = s.tasks.filter(pred);
     let extra = "";
-    if (name === "Stopped" && !showArchive && items.length > 5) {
+    if (name === "Stopped" && items.length > 5) {
       const n = items.length - 5;
       items = items.slice(0, 5);
-      extra = `<button class="quiet archbtn" onclick="showArchive=true;refresh()">show ${n} archived</button>`;
-    } else if (name === "Stopped" && showArchive && items.length > 5) {
-      extra = `<button class="quiet archbtn" onclick="showArchive=false;refresh()">hide archive</button>`;
+      extra = `<button class="quiet archbtn" onclick="toggleArchive(true)">→ archive (${n} older)</button>`;
     }
     let cards = items.map(t => taskCard(t, name)).join("");
     if (name === "Needs you") cards = s.hands.map(handCard).join("") + cards;
@@ -279,6 +295,19 @@ async function refresh() {
     return `<div class="col${name==="Needs you"?" attn":""}"><h3>${name}${name==="Stopped"?` <span>${s.tasks.filter(pred).length}</span>`:""}</h3>
             <div class="cards">${cards}</div></div>`;
   }).join("");
+  const stopped = s.tasks.filter(t => ["stopped","stopping"].includes(t.ws_status));
+  $("#archiveBtn").textContent = `Archive (${stopped.length})`;
+  $("#archTable").innerHTML =
+    `<tr><th>task</th><th>kind</th><th>prompt</th><th>tokens</th><th>last active</th><th></th></tr>` +
+    stopped.map(t => `<tr>
+      <td class="mono">${t.name}</td>
+      <td>${chip("neutral", t.template || "?")}</td>
+      <td style="max-width:34rem; overflow-wrap:anywhere;">${t.prompt}</td>
+      <td class="mono">${t.tok ? `${fmtTok(t.tok.input)}/${fmtTok(t.tok.output)}` : "—"}</td>
+      <td class="mono">${(t.updated || "").slice(0, 10)}</td>
+      <td><button class="quiet archbtn" onclick="act('start','${t.workspace}')">Start</button>
+          <button class="quiet archbtn" onclick="openTask('${t.workspace}','${t.name}','stopped')">Visit</button></td>
+    </tr>`).join("");
   $("#fleet").innerHTML =
     `<tr><th>environment</th><th>state</th><th>memory</th><th></th></tr>` +
     s.fleet.map(f => {

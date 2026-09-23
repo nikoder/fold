@@ -105,16 +105,24 @@ def ensure_profile():
           "network=incusbr0", "security.acls=fold-egress")
 
 
-OPENCODE_CONFIG = json.dumps({
-    "$schema": "https://opencode.ai/config.json",
-    "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
-    "provider": {"llamaswap": {
-        "npm": "@ai-sdk/openai-compatible", "name": "llamaswap",
-        "options": {"baseURL": "https://inference.fold.example/v1",
-                    "apiKey": "caddy-injected"},
-        "models": {"glm53-flash": {"name": "GLM 5.3 Flash"}}}},
-    "model": "llamaswap/glm53-flash",
-})
+# Inference endpoint is configurable so the fold can ride a different
+# server (e.g. lemonade's OpenAI-compatible /api/v1 during llamaswap
+# downtime): FOLD_LLM_URL, FOLD_LLM_MODEL, FOLD_LLM_KEY.
+LLM_URL = os.environ.get("FOLD_LLM_URL", "https://inference.fold.example/v1")
+LLM_MODEL = os.environ.get("FOLD_LLM_MODEL", "glm53-flash")
+LLM_KEY = os.environ.get("FOLD_LLM_KEY", "caddy-injected")
+
+
+def opencode_config():
+    return json.dumps({
+        "$schema": "https://opencode.ai/config.json",
+        "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
+        "provider": {"fold": {
+            "npm": "@ai-sdk/openai-compatible", "name": "fold",
+            "options": {"baseURL": LLM_URL, "apiKey": LLM_KEY},
+            "models": {LLM_MODEL: {"name": LLM_MODEL}}}},
+        "model": f"fold/{LLM_MODEL}",
+    })
 
 
 def native_dispatch(flavor, prompt, mem_gib=None, ctx=None):
@@ -151,7 +159,7 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None):
           "limits.cpu=2")
     for k, v in (("prompt", prompt), ("repo", repo),
                  ("env", json.dumps(env)),
-                 ("opencode_config", OPENCODE_CONFIG)):
+                 ("opencode_config", opencode_config())):
         incus("config", "set", inst, f"user.fold_{k}", v)
     incus("start", inst)
     reg = registry()

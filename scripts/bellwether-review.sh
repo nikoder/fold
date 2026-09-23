@@ -20,6 +20,10 @@ REPO=${FOLD_REPO:-you/fold-playground}
 FORGEJO=${FOLD_FORGEJO:-https://git.fold.example}
 TOKEN=$(grep -oP 'BELLWETHER_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
 CTR="bellwether-pr$PR"
+# Inference endpoint (override during llamaswap downtime, e.g. lemonade):
+MODEL=${FOLD_REVIEW_MODEL:-glm53-flash}
+LLM_URL=${FOLD_REVIEW_URL:-https://inference.fold.example/v1/chat/completions}
+LLM_KEY=${FOLD_REVIEW_KEY:-caddy-injected}
 
 PRJSON=$(curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR")
 TITLE=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["title"])' "$PRJSON")
@@ -76,13 +80,14 @@ else
 fi
 
 # --- verdict stage: fresh LLM context judges diff + check results ---
-REVIEW=$(python3 - "$TITLE" "$DIFFFILE" "$CHECK_STATUS" "$FILESFILE" <<'EOF'
+REVIEW=$(python3 - "$TITLE" "$DIFFFILE" "$CHECK_STATUS" "$FILESFILE" "$LLM_URL" "$MODEL" "$LLM_KEY" <<'EOF'
 import json, sys, urllib.request
 
 title = sys.argv[1]
 diff = open(sys.argv[2]).read()
 checks = sys.argv[3]
 files = open(sys.argv[4]).read() or "(none captured)"
+llm_url, llm_model, llm_key = sys.argv[5], sys.argv[6], sys.argv[7]
 
 system = """You are bellwether, the reviewer agent of the fold. You review a pull request diff together with the result of running the repo's own check script against the PR branch in an isolated container.
 Rules:
@@ -95,9 +100,9 @@ Rules:
 Respond with ONLY a JSON object: {"verdict": "approve" | "request_changes" | "escalate", "body": "<your review rationale, 2-6 sentences, mentioning the check results>"}"""
 
 req = urllib.request.Request(
-    "https://inference.fold.example/v1/chat/completions",
+    llm_url,
     data=json.dumps({
-        "model": "glm53-flash",
+        "model": llm_model,
         "max_tokens": 4000,
         "chat_template_kwargs": {"enable_thinking": False},
         "messages": [
@@ -105,7 +110,8 @@ req = urllib.request.Request(
             {"role": "user", "content": f"PR title: {title}\n\nCheck run:\n{checks}\n\nDiff:\n{diff}\n\nCurrent contents of changed files (post-change):\n{files}"},
         ],
     }).encode(),
-    headers={"Content-Type": "application/json"},
+    headers={"Content-Type": "application/json",
+             "Authorization": f"Bearer {llm_key}"},
 )
 out = json.load(urllib.request.urlopen(req, timeout=300))
 msg = out["choices"][0]["message"]
