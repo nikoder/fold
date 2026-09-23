@@ -111,7 +111,10 @@ def main():
         return
     print(f"backfilling {len(todo)}: {sorted(todo)}")
     incus("delete", "-f", SCRATCH, ok_fail=True)
-    incus("launch", "-q", "images:alpine/3.22", SCRATCH)
+    # LOCAL image only: images: aliases phone home for an update check
+    # that can stall indefinitely (thrice-learned lesson). The first run
+    # of this script hung 10 minutes on exactly that.
+    incus("launch", "-q", "fold-agent-base", SCRATCH)
     try:
         for ws, vol in sorted(todo.items()):
             rec = harvest(vol)
