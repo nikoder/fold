@@ -84,7 +84,9 @@
   .term { background:#10140F; color:#C9D4C4; font-family:"IBM Plex Mono",monospace;
           font-size:.74rem; line-height:1.5; border-radius:8px; padding:.8rem .9rem;
           flex:1; min-height:300px; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
-  #taskdlg { width:min(1100px,96vw); height:min(88vh,950px); display:flex;
+  /* no display on the base rule: it would override the UA's display:none
+     for closed dialogs (symptom: modal lingers after close until reflow) */
+  #taskdlg { width:min(1100px,96vw); height:min(88vh,950px);
              flex-direction:column; }
   #taskdlg[open] { display:flex; }
   .msgrow { display:flex; gap:.5rem; margin-top:.6rem; }

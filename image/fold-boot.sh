@@ -11,7 +11,10 @@
 set -euo pipefail
 
 SOCK=/dev/incus/sock
-key() { curl -sf --unix-socket "$SOCK" "http://localhost/1.0/config/user.fold_$1" || true; }
+# user.* config keys are served to root only (socket is world-rw, the
+# API discriminates) — same reason the Coder starter fetched via a
+# root oneshot. coder has baked NOPASSWD sudo.
+key() { sudo curl -sf --unix-socket "$SOCK" "http://localhost/1.0/config/user.fold_$1" || true; }
 
 PROMPT=$(key prompt)
 REPO=$(key repo)
@@ -37,5 +40,6 @@ if [ -n "$REPO" ]; then
 fi
 cd "$WORKDIR"
 
-exec agentapi server --type opencode --term-width 120 --term-height 40 \
-  ${PROMPT:+-I "$PROMPT"} -- opencode
+ARGS=(server --type opencode --term-width 120 --term-height 40)
+[ -n "$PROMPT" ] && ARGS+=(-I "$PROMPT")
+exec agentapi "${ARGS[@]}" -- opencode
