@@ -112,6 +112,6 @@ mid-construction. The commit history is the honest design document.
 
 ## License
 
-MIT (provisional until first public release).
+MIT.
 
 [agentapi]: https://github.com/coder/agentapi
