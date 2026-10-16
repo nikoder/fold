@@ -11,11 +11,19 @@ Commands:
   watch [--once]              poll tasks; on failure: notify + pause. NEVER
                               deletes anything — deletion is a human act.
 
-Config via env (defaults suit the eval deployment):
+Deployment specifics (your Forgejo, your ntfy, repo paths, board URL)
+live OUTSIDE this repo in STATE_DIR/fold.env — plain KEY=VALUE lines;
+process env overrides it. Keys:
+  FOLD_FORGEJO        https://git.example.com
+  FOLD_WORK_REPO      owner/repo agents work on
+  FOLD_SHEPHERD_REPO  owner/repo shepherds plan from (default: WORK_REPO)
+  FOLD_AUTHOR_LOGIN   forge account agents author as (default: fold-alpha)
+  FOLD_NTFY           https://ntfy.example.com/fold  (full topic URL)
+  FOLD_BOARD_URL      http://<incus-bridge-ip>:7070  (shepherds only)
+Plus plain env config:
   FOLD_CODER_URL   (http://localhost:7081)
   FOLD_CODER_TOKEN_FILE (~/coder-eval/.api-token-tasks)
-  FOLD_CREDS       (~/coder-eval/bellwether.env)   # ntfy token
-  FOLD_NTFY        (https://ntfy.fold.example/fold)
+  FOLD_CREDS       (~/coder-eval/bellwether.env)   # tokens, 0600
 """
 import json
 import os
@@ -23,6 +31,7 @@ import re
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 CODER = os.environ.get("FOLD_CODER_URL", "http://localhost:7081")
@@ -30,12 +39,45 @@ TOKEN_FILE = os.path.expanduser(
     os.environ.get("FOLD_CODER_TOKEN_FILE", "~/coder-eval/.api-token-tasks"))
 CREDS = os.path.expanduser(
     os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
-NTFY = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
-TOKEN = open(TOKEN_FILE).read().strip()
+try:
+    TOKEN = open(TOKEN_FILE).read().strip()
+except FileNotFoundError:
+    TOKEN = ""  # no Coder in this deployment: native-only
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
 STATE_DIR = os.path.expanduser(
     os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
 MEMSTATS = os.path.join(STATE_DIR, "memstats.jsonl")
+
+
+def _fold_env():
+    conf = {}
+    try:
+        for line in open(os.path.join(STATE_DIR, "fold.env")):
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                conf[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    return conf
+
+
+_CONF = _fold_env()
+
+
+def conf(name, default=None):
+    return os.environ.get(name) or _CONF.get(name) or default
+
+
+def require(name, why):
+    v = conf(name)
+    if not v:
+        sys.exit(f"{name} is not set (needed for {why}); set it in the "
+                 f"environment or in {os.path.join(STATE_DIR, 'fold.env')}")
+    return v
+
+
+NTFY = conf("FOLD_NTFY")  # full topic URL
 
 
 def api(path, method="GET", body=None):
@@ -48,6 +90,10 @@ def api(path, method="GET", body=None):
 
 
 def ntfy(title, message):
+    if not NTFY:
+        print(f"[ntfy skipped — FOLD_NTFY not set] {title}: {message}",
+              file=sys.stderr)
+        return
     tok = re.search(r"FOLD_NTFY_TOKEN=(.*)", open(CREDS).read()).group(1).strip()
     req = urllib.request.Request(
         NTFY, data=message.encode(),
@@ -64,7 +110,6 @@ def incus(*args, ok_fail=False):
 
 REGISTRY = os.path.join(STATE_DIR, "tasks.json")
 IMAGE_ALIAS = "fold-agent-base"
-FORGEJO_URL = "https://git.fold.example"
 
 
 def registry():
@@ -116,20 +161,25 @@ def endpoints():
     try:
         return json.load(open(ENDPOINTS_FILE))
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"_default": {"endpoint": "llamaswap", "model": "glm53-flash"},
-                "llamaswap": {"url": "https://inference.fold.example/v1",
-                              "key": "caddy-injected",
-                              "models": ["glm53-flash"]}}
+        return {}
 
 
 def resolve_llm(llm=None, model=None):
     """(url, key, model, endpoint_name) for a dispatch."""
     if os.environ.get("FOLD_LLM_URL"):
+        m = model or os.environ.get("FOLD_LLM_MODEL")
+        if not m:
+            sys.exit("FOLD_LLM_URL is set but no model given "
+                     "(pass --model or set FOLD_LLM_MODEL)")
+        # "proxy-injected" = any non-empty placeholder; use it when a
+        # reverse proxy attaches the real credential server-side.
         return (os.environ["FOLD_LLM_URL"],
-                os.environ.get("FOLD_LLM_KEY", "caddy-injected"),
-                model or os.environ.get("FOLD_LLM_MODEL", "glm53-flash"),
-                "env")
+                os.environ.get("FOLD_LLM_KEY", "proxy-injected"), m, "env")
     eps = endpoints()
+    if not eps:
+        sys.exit(f"no inference endpoints: create {ENDPOINTS_FILE} "
+                 "(names -> url/key/models + a _default pair; see "
+                 "docs/QUICKSTART.md) or set FOLD_LLM_URL")
     default = eps.get("_default", {})
     name = llm or default.get("endpoint")
     ep = eps.get(name)
@@ -141,7 +191,7 @@ def resolve_llm(llm=None, model=None):
     if ep.get("models") and m not in ep["models"]:
         sys.exit(f"model {m!r} not offered by {name}; has: {ep['models']}")
     key = ep.get("key") or (cred(ep["key_from"]) if ep.get("key_from")
-                            else "caddy-injected")
+                            else "proxy-injected")
     return ep["url"], key, m, name
 
 
@@ -165,22 +215,28 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     name = f"task-{int(time.time()) % 100000}"
     inst = f"fold-{name}"
     author = cred("FOLD_ALPHA_TOKEN")
+    forge = require("FOLD_FORGEJO", "dispatch")
+    work_repo = require("FOLD_WORK_REPO", "dispatch")
+    login = conf("FOLD_AUTHOR_LOGIN", "fold-alpha")
+    forge_netloc = urllib.parse.urlparse(forge).netloc
     env = {
-        "FORGEJO_URL": FORGEJO_URL,
-        "FORGEJO_REPO": "you/fold-playground",
+        "FORGEJO_URL": forge,
+        "FORGEJO_REPO": work_repo,
         "FORGEJO_TOKEN": author,
-        "NTFY_URL": "https://ntfy.fold.example",
-        "NTFY_TOKEN": cred("FOLD_NTFY_TOKEN"),
+        "NTFY_URL": NTFY.rsplit("/", 1)[0] if NTFY else "",
+        "NTFY_TOKEN": cred("FOLD_NTFY_TOKEN") or "",
         "FOLD_WORKSPACE": name,
-        "GIT_AUTHOR_NAME": "fold-alpha",
-        "GIT_AUTHOR_EMAIL": "fold-alpha@fold.example",
-        "GIT_COMMITTER_NAME": "fold-alpha",
-        "GIT_COMMITTER_EMAIL": "fold-alpha@fold.example",
+        "GIT_AUTHOR_NAME": login,
+        "GIT_AUTHOR_EMAIL": f"{login}@{forge_netloc}",
+        "GIT_COMMITTER_NAME": login,
+        "GIT_COMMITTER_EMAIL": f"{login}@{forge_netloc}",
     }
-    repo = f"https://fold-alpha:{author}@git.fold.example/you/fold-playground.git"
+    repo = f"https://{login}:{author}@{forge_netloc}/{work_repo}.git"
     if flavor == "shepherd":
-        repo = f"https://fold-alpha:{author}@git.fold.example/you/fold.git"
-        env.update(FOLD_BOARD_URL="http://10.0.0.1:7070",
+        shep_repo = conf("FOLD_SHEPHERD_REPO", work_repo)
+        repo = f"https://{login}:{author}@{forge_netloc}/{shep_repo}.git"
+        env.update(FOLD_BOARD_URL=require("FOLD_BOARD_URL",
+                                          "shepherd dispatch"),
                    FOLD_BOARD_TOKEN=cred("FOLD_BOARD_TOKEN"),
                    FOLD_CTX=name)
     need = mem_gib or learned_footprint_gib(flavor) or 2.0
@@ -215,8 +271,14 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
 
 
 def get_tasks():
-    # list lives at ?owner=me; /tasks/me is the create/get-by-id prefix
-    d = api("/api/experimental/tasks?owner=me")
+    # list lives at ?owner=me; /tasks/me is the create/get-by-id prefix.
+    # Coder gone or token expired = native-only mode, never a crash.
+    try:
+        d = api("/api/experimental/tasks?owner=me")
+    except Exception as e:
+        print(f"[coder unavailable ({e}); native registry only]",
+              file=sys.stderr)
+        return []
     return d if isinstance(d, list) else d.get("tasks", [])
 
 

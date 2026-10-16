@@ -24,14 +24,34 @@ FOLDCTL = os.path.join(HERE, "..", "bin", "foldctl")
 CODER = os.environ.get("FOLD_CODER_URL", "http://localhost:7081")
 TOKEN_FILE = os.path.expanduser(
     os.environ.get("FOLD_CODER_TOKEN_FILE", "~/coder-eval/.api-token-tasks"))
-TOKEN = open(TOKEN_FILE).read().strip()
+try:
+    TOKEN = open(TOKEN_FILE).read().strip()
+except FileNotFoundError:
+    TOKEN = ""  # no Coder in this deployment: native-only
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
 ALLOWED_VERBS = {"pause", "resume", "stop", "start"}
 CREDS = os.path.expanduser(
     os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
-NTFY_TOPIC = os.environ.get("FOLD_NTFY", "https://ntfy.fold.example/fold")
 STATE_DIR = os.path.expanduser(
     os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
+
+
+def _fold_env(name, default=None):
+    """Deployment specifics live in STATE_DIR/fold.env (KEY=VALUE),
+    outside the repo; process env overrides. Same contract as foldctl."""
+    if os.environ.get(name):
+        return os.environ[name]
+    try:
+        for line in open(os.path.join(STATE_DIR, "fold.env")):
+            line = line.strip()
+            if line.startswith(name + "="):
+                return line.partition("=")[2].strip()
+    except FileNotFoundError:
+        pass
+    return default
+
+
+NTFY_TOPIC = _fold_env("FOLD_NTFY")  # full topic URL; unset = no hands feed
 HANDS_FILE = os.path.join(STATE_DIR, "hands.json")
 CTX_FILE = os.path.join(STATE_DIR, "ctx.json")
 
@@ -90,7 +110,7 @@ def hands():
     """
     now = time.time()
     store = _load_hands()
-    if now - _hands_cache["t"] >= 15:
+    if NTFY_TOPIC and now - _hands_cache["t"] >= 15:
         _hands_cache["t"] = now
         try:
             tok = re.search(r"FOLD_BOARD_NTFY_TOKEN=(.*)",
@@ -207,7 +227,12 @@ def incus_instances():
 
 
 def state():
-    d = coder("/api/experimental/tasks?owner=me")
+    # Coder being gone (retired, or token expired) must never take the
+    # native fleet down with it: degrade to native-only.
+    try:
+        d = coder("/api/experimental/tasks?owner=me")
+    except Exception:
+        d = []
     tasks = d if isinstance(d, list) else d.get("tasks", [])
     ctx = task_ctx()
     fleet = incus_instances()
@@ -348,7 +373,10 @@ def archive_transcripts():
     the transcript survives stop/freeze and Visit works in any state."""
     while True:
         try:
-            d = coder("/api/experimental/tasks?owner=me")
+            try:
+                d = coder("/api/experimental/tasks?owner=me")
+            except Exception:
+                d = []  # native tasks must still get archived
             tasks = d if isinstance(d, list) else d.get("tasks", [])
             try:
                 tokens = json.load(open(TOKENS_FILE))

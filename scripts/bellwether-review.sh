@@ -16,13 +16,20 @@
 set -euo pipefail
 
 PR=${1:?usage: bellwether-review.sh <pr-number>}
-REPO=${FOLD_REPO:-you/fold-playground}
-FORGEJO=${FOLD_FORGEJO:-https://git.fold.example}
+STATE=${FOLD_STATE_DIR:-$HOME/.local/state/fold}
+# Deployment specifics (forge, repo, ntfy) come from the environment or
+# from STATE/fold.env — same contract as foldctl, no homelab defaults.
+fold_env() { grep -oP "^$1=\K.*" "$STATE/fold.env" 2>/dev/null | head -1 || true; }
+REPO=${FOLD_REPO:-$(fold_env FOLD_WORK_REPO)}
+FORGEJO=${FOLD_FORGEJO:-$(fold_env FOLD_FORGEJO)}
+NTFY=${FOLD_NTFY:-$(fold_env FOLD_NTFY)}
+: "${REPO:?set FOLD_REPO (or FOLD_WORK_REPO in $STATE/fold.env)}"
+: "${FORGEJO:?set FOLD_FORGEJO (env or $STATE/fold.env)}"
+FORGE_HOST=${FORGEJO#*://}
 TOKEN=$(grep -oP 'BELLWETHER_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
 CTR="bellwether-pr$PR"
 # Inference endpoint: FOLD_REVIEW_* env wins; otherwise the fold's
-# endpoint registry default; otherwise llamaswap.
-STATE=${FOLD_STATE_DIR:-$HOME/.local/state/fold}
+# endpoint registry default.
 if [ -z "${FOLD_REVIEW_URL:-}" ] && [ -f "$STATE/endpoints.json" ]; then
   eval "$(python3 - "$STATE/endpoints.json" "${FOLD_CREDS:-$HOME/coder-eval/bellwether.env}" <<'PY'
 import json, re, sys
@@ -39,9 +46,11 @@ print(f"REG_KEY='{key}'")
 PY
 )"
 fi
-MODEL=${FOLD_REVIEW_MODEL:-${REG_MODEL:-glm53-flash}}
-LLM_URL=${FOLD_REVIEW_URL:-${REG_URL:-https://inference.fold.example/v1/chat/completions}}
-LLM_KEY=${FOLD_REVIEW_KEY:-${REG_KEY:-caddy-injected}}
+MODEL=${FOLD_REVIEW_MODEL:-${REG_MODEL:-}}
+LLM_URL=${FOLD_REVIEW_URL:-${REG_URL:-}}
+LLM_KEY=${FOLD_REVIEW_KEY:-${REG_KEY:-proxy-injected}}
+: "${LLM_URL:?no review endpoint: set FOLD_REVIEW_URL or an endpoints.json _default}"
+: "${MODEL:?no review model: set FOLD_REVIEW_MODEL or an endpoints.json _default}"
 
 PRJSON=$(curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR")
 TITLE=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["title"])' "$PRJSON")
@@ -69,7 +78,7 @@ if incus exec "$CTR" -- sh -c "
     if command -v apk >/dev/null; then apk add -q $PKGS >/dev/null 2>&1;
     else apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y $PKGS >/dev/null 2>&1; fi &&
     git clone -q --depth 1 --branch '$HEADREF' \
-      'https://bellwether:$TOKEN@git.fold.example/$REPO.git' /work
+      'https://bellwether:$TOKEN@$FORGE_HOST/$REPO.git' /work
   "; then
   # Capture post-change contents of the files the PR touches, so the
   # verdict stage sees current reality, not just the delta. (Lesson from
@@ -155,10 +164,10 @@ EOF
 
 # escalate = bellwether's raise-hand: comment (not approve/reject) + ntfy ping.
 EVENT=$(python3 -c 'import json,sys;v=json.loads(sys.argv[1])["verdict"];print({"approve":"APPROVED","request_changes":"REQUEST_CHANGES","escalate":"COMMENT"}[v])' "$REVIEW")
-if [ "$EVENT" = "COMMENT" ]; then
+if [ "$EVENT" = "COMMENT" ] && [ -n "$NTFY" ]; then
   NTFY_TOKEN=$(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
   curl -s -H "Authorization: Bearer $NTFY_TOKEN" -H "Title: raise-hand: bellwether" \
-    -d "PR #$PR ($REPO): escalating to human review." https://ntfy.fold.example/fold >/dev/null
+    -d "PR #$PR ($REPO): escalating to human review." "$NTFY" >/dev/null
 fi
 BODY=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["body"])' "$REVIEW")
 
