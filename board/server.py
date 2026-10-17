@@ -54,25 +54,39 @@ def _fold_env(name, default=None):
 NTFY_TOPIC = _fold_env("FOLD_NTFY")  # full topic URL; unset = no hands feed
 
 
-def _warn_creds_in_repo():
-    """A credentials file inside a git checkout is one `git add -A`
-    away from being published. Warn loudly; the human decides."""
+def _creds_repo_guard():
+    """Creds inside a checkout of a repo agents work on = keys shipped
+    into every agent workspace: refuse to start (same rule as foldctl,
+    which also re-checks on every dispatch the board shells out).
+    Inside any other git repo: warn loudly."""
     if not os.path.exists(CREDS):
         return
     d = os.path.dirname(os.path.abspath(CREDS))
-    while True:
-        if os.path.exists(os.path.join(d, ".git")):
-            print(f"WARNING: credentials file {CREDS} sits inside a git "
-                  f"repository ({d}). Move it somewhere unversioned and "
-                  "point FOLD_CREDS at it.", flush=True)
-            return
+    while not os.path.exists(os.path.join(d, ".git")):
         parent = os.path.dirname(d)
         if parent == d:
             return
         d = parent
+    assoc = {v for v in (_fold_env("FOLD_WORK_REPO"),
+                         _fold_env("FOLD_SHEPHERD_REPO")) if v}
+    try:
+        r = subprocess.run(["git", "-C", d, "remote", "-v"],
+                           capture_output=True, text=True)
+        remotes = r.stdout if r.returncode == 0 else ""
+    except OSError:
+        remotes = ""  # no git binary: fall through to the loud warning
+    for a in assoc:
+        if re.search(rf"[:/]{re.escape(a)}(\.git)?(\s|$)", remotes):
+            raise SystemExit(
+                f"REFUSING to start: credentials file {CREDS} sits inside "
+                f"a checkout of {a} ({d}) — a repo fold agents work on. "
+                "Move it somewhere unversioned and point FOLD_CREDS at it.")
+    print(f"WARNING: credentials file {CREDS} sits inside a git "
+          f"repository ({d}). Move it somewhere unversioned and "
+          "point FOLD_CREDS at it.", flush=True)
 
 
-_warn_creds_in_repo()
+_creds_repo_guard()
 HANDS_FILE = os.path.join(STATE_DIR, "hands.json")
 CTX_FILE = os.path.join(STATE_DIR, "ctx.json")
 

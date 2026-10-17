@@ -80,26 +80,42 @@ def require(name, why):
 NTFY = conf("FOLD_NTFY")  # full topic URL
 
 
-def _warn_creds_in_repo():
-    """A credentials file inside a git checkout is one `git add -A`
-    away from being published — and unforgivable in a repo agents work
-    on. Warn loudly; the human decides."""
+def _creds_repo_guard():
+    """A credentials file inside a checkout of a repo agents work on
+    would ship the keys into every agent workspace: REFUSE to run.
+    Inside any other git repo it is still one `git add -A` from
+    publication: warn loudly, the human decides. Runs on every foldctl
+    invocation (the board shells out here per mutation), so a growing
+    repo registry is re-checked on each dispatch."""
     if not os.path.exists(CREDS):
         return
     d = os.path.dirname(os.path.abspath(CREDS))
-    while True:
-        if os.path.exists(os.path.join(d, ".git")):
-            print(f"WARNING: credentials file {CREDS} sits inside a git "
-                  f"repository ({d}). Move it somewhere unversioned and "
-                  "point FOLD_CREDS at it.", file=sys.stderr)
-            return
+    while not os.path.exists(os.path.join(d, ".git")):
         parent = os.path.dirname(d)
         if parent == d:
-            return
+            return  # not inside any git repo
         d = parent
+    assoc = {v for v in (conf("FOLD_WORK_REPO"), conf("FOLD_SHEPHERD_REPO"))
+             if v}
+    try:
+        r = subprocess.run(["git", "-C", d, "remote", "-v"],
+                           capture_output=True, text=True)
+        remotes = r.stdout if r.returncode == 0 else ""
+    except OSError:
+        remotes = ""  # no git binary: fall through to the loud warning
+    for a in assoc:
+        if re.search(rf"[:/]{re.escape(a)}(\.git)?(\s|$)", remotes):
+            sys.exit(f"REFUSING to run: credentials file {CREDS} sits "
+                     f"inside a checkout of {a} ({d}) — a repo fold "
+                     "agents work on. Agents would receive your keys "
+                     "with every clone. Move the file somewhere "
+                     "unversioned and point FOLD_CREDS at it.")
+    print(f"WARNING: credentials file {CREDS} sits inside a git "
+          f"repository ({d}). Move it somewhere unversioned and "
+          "point FOLD_CREDS at it.", file=sys.stderr)
 
 
-_warn_creds_in_repo()
+_creds_repo_guard()
 
 
 def api(path, method="GET", body=None):

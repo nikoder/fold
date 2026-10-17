@@ -23,10 +23,12 @@ Portability in the README for what is still assumed.
    board's agent-plane bearer token, the human-plane header secret, and
    your inference keys. The default path (`~/coder-eval/bellwether.env`)
    is a fossil of the fold's own history; set `FOLD_CREDS` to move it.
-   **Never put this file inside a git repository** — least of all one
-   that agents work on: a checkout containing live tokens is one
-   `git add -A` away from publishing them. foldctl and the board warn
-   loudly on startup if they catch you doing it.
+   **Never put this file inside a git repository.** If it sits inside
+   a checkout of a repo agents work on, every agent clone would carry
+   your keys — foldctl and the board REFUSE to run in that case
+   (re-checked on every dispatch). Inside any other git repo, a
+   checkout with live tokens is still one `git add -A` away from
+   publishing them, so they warn loudly and leave the call to you.
 2. **Deployment file**: `$FOLD_STATE_DIR/fold.env` (default
    `~/.local/state/fold/`), plain KEY=VALUE, process env overrides —
    `FOLD_FORGEJO` (base URL), `FOLD_WORK_REPO` (owner/repo agents work
