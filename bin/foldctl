@@ -80,6 +80,28 @@ def require(name, why):
 NTFY = conf("FOLD_NTFY")  # full topic URL
 
 
+def _warn_creds_in_repo():
+    """A credentials file inside a git checkout is one `git add -A`
+    away from being published — and unforgivable in a repo agents work
+    on. Warn loudly; the human decides."""
+    if not os.path.exists(CREDS):
+        return
+    d = os.path.dirname(os.path.abspath(CREDS))
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            print(f"WARNING: credentials file {CREDS} sits inside a git "
+                  f"repository ({d}). Move it somewhere unversioned and "
+                  "point FOLD_CREDS at it.", file=sys.stderr)
+            return
+        parent = os.path.dirname(d)
+        if parent == d:
+            return
+        d = parent
+
+
+_warn_creds_in_repo()
+
+
 def api(path, method="GET", body=None):
     req = urllib.request.Request(
         f"{CODER}{path}", method=method,

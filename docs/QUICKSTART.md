@@ -1,8 +1,9 @@
 # Quickstart (honest edition)
 
 fold is pre-alpha and extracted from one homelab. This is the shape of
-a deployment, not yet a turnkey path — expect to adapt hostnames and
-the credentials convention (see Portability in the README).
+a deployment, not yet a turnkey path. Everything specific to your
+deployment lives in two small uncommitted files (steps 1–2 below); see
+Portability in the README for what is still assumed.
 
 ## You need
 
@@ -20,30 +21,41 @@ the credentials convention (see Portability in the README).
    token for the author agent, one for the reviewer, an ntfy write-only
    token for topic `fold` (+ a read-only one for the board), the
    board's agent-plane bearer token, the human-plane header secret, and
-   your inference keys. Defaults point at
-   `~/coder-eval/bellwether.env`; set `FOLD_CREDS` to move it.
-2. **Accounts.** Forgejo users for each author agent (e.g.
+   your inference keys. The default path (`~/coder-eval/bellwether.env`)
+   is a fossil of the fold's own history; set `FOLD_CREDS` to move it.
+   **Never put this file inside a git repository** — least of all one
+   that agents work on: a checkout containing live tokens is one
+   `git add -A` away from publishing them. foldctl and the board warn
+   loudly on startup if they catch you doing it.
+2. **Deployment file**: `$FOLD_STATE_DIR/fold.env` (default
+   `~/.local/state/fold/`), plain KEY=VALUE, process env overrides —
+   `FOLD_FORGEJO` (base URL), `FOLD_WORK_REPO` (owner/repo agents work
+   on), `FOLD_NTFY` (full topic URL), `FOLD_BOARD_URL` (bridge-reachable,
+   for shepherds), optional `FOLD_SHEPHERD_REPO` and
+   `FOLD_AUTHOR_LOGIN`. Nothing in the repo defaults to any particular
+   deployment; a missing value fails loudly at the verb that needs it.
+3. **Accounts.** Forgejo users for each author agent (e.g.
    `fold-alpha`) and `bellwether`; collaborator rights on target repos;
    branch protection: 1 required approval, no direct pushes to the
    default branch. ntfy users: agent identity write-only on `fold`,
    board identity read-only.
-3. **Egress ACL** (observe first, restrict later):
+4. **Egress ACL** (observe first, restrict later):
    `incus network acl create fold-egress`, one egress `allow`+logged
    rule, one ingress `allow`. `scripts/egress-report.sh` turns the logs
    into your eventual allowlist.
-4. **Golden image**: pin a base locally
+5. **Golden image**: pin a base locally
    (`incus image copy images:debian/13/cloud local: --alias
    fold-builder-base` — never launch from `images:` at runtime, the
    remote update check can stall forever), then
    `./scripts/build-image.sh`. Read that script's comments: every one
    is a scar.
-5. **Endpoint registry**: `$FOLD_STATE_DIR/endpoints.json` (default
+6. **Endpoint registry**: `$FOLD_STATE_DIR/endpoints.json` (default
    `~/.local/state/fold/`) naming your inference endpoints, models, and
    the default pair.
-6. **Board**: `docker compose up -d --build` from the repo root. Put
+7. **Board**: `docker compose up -d --build` from the repo root. Put
    basic auth + an injected `X-Fold-Human` header secret on a reverse
    proxy route; loopback and the agent bearer plane work as-is.
-7. **Contract**: copy `contract/AGENTS.template.md` into each repo
+8. **Contract**: copy `contract/AGENTS.template.md` into each repo
    agents will work on (as `AGENTS.md`), add a `.fold/check`
    (executable, exit 0 = pass) and `.fold/config` (image/packages/
    timeout for the check container).

@@ -52,6 +52,27 @@ def _fold_env(name, default=None):
 
 
 NTFY_TOPIC = _fold_env("FOLD_NTFY")  # full topic URL; unset = no hands feed
+
+
+def _warn_creds_in_repo():
+    """A credentials file inside a git checkout is one `git add -A`
+    away from being published. Warn loudly; the human decides."""
+    if not os.path.exists(CREDS):
+        return
+    d = os.path.dirname(os.path.abspath(CREDS))
+    while True:
+        if os.path.exists(os.path.join(d, ".git")):
+            print(f"WARNING: credentials file {CREDS} sits inside a git "
+                  f"repository ({d}). Move it somewhere unversioned and "
+                  "point FOLD_CREDS at it.", flush=True)
+            return
+        parent = os.path.dirname(d)
+        if parent == d:
+            return
+        d = parent
+
+
+_warn_creds_in_repo()
 HANDS_FILE = os.path.join(STATE_DIR, "hands.json")
 CTX_FILE = os.path.join(STATE_DIR, "ctx.json")
 
