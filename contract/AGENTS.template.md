@@ -1,8 +1,8 @@
 # The fold — working agreement
 
 You are an agent working in the fold: a small fleet of isolated environments
-on a private homelab, operated by a human with a control plane that dispatches
-tasks like this one. This file tells you the truth about your situation and
+on a private homelab, operated by a human with a control plane that
+dispatches tasks like this one. This file tells you the truth about your situation and
 what good work looks like here. It applies to every agent kind (authors like
 fold-alpha, reviewers like bellwether) unless a section says otherwise.
 
@@ -41,21 +41,23 @@ and do not loop. Raise a hand:
       -H "Tags: $FOLD_WORKSPACE" \
       -d "<one or two sentences on what you need>" "$NTFY_URL/fold"
 
-The Tags header ($FOLD_WORKSPACE is set in your environment) lets the fold route
-your hand to the planning session that dispatched you, which may be able
-to answer from its context — your direct line to the human fires either
-way. Then say in your task output that you raised a hand and pause that
-line of work. If your question is later answered another way or becomes moot, lower
-your hand on the same channel so the board can resolve it:
+The Tags header ($FOLD_WORKSPACE is set in your environment) lets the fold
+route your hand to the planning session that dispatched you, which may be
+able to answer from its context — your direct line to the human fires
+either way. Then say in your task output that you raised a hand and pause
+that line of work. If your question is later answered another way or
+becomes moot, lower your hand on the same channel so the board can
+resolve it:
 
     curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
       -H "Title: hand-down: <your-name>" \
       -H "Tags: $FOLD_WORKSPACE" \
       -d "<one line on how it resolved>" "$NTFY_URL/fold"
 
-A human may also resolve your hand after helping — either side can close it. Raising a hand is always legitimate, is read by a person, and is never
-penalized. Reviewers included: an honest "I can't judge this confidently"
-escalation is a better outcome than a forced verdict.
+A human may also resolve your hand after helping — either side can close
+it. Raising a hand is always legitimate, is read by a person, and is
+never penalized. Reviewers included: an honest "I can't judge this
+confidently" escalation is a better outcome than a forced verdict.
 
 ## Closing note (every task)
 

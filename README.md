@@ -11,9 +11,9 @@ holds a few opinions unusually firmly.
 
 **Status: pre-alpha, honestly.** Extracted from a working homelab
 deployment where everything below runs daily. Deployment specifics
-(hostnames, a credentials file convention) are still baked in as
-defaults — see [Portability](#portability). No releases, no stability
-promises, real ideas.
+live in two small uncommitted files — see
+[Portability](#portability). No releases, no stability promises, real
+ideas.
 
 ## The name
 
@@ -36,8 +36,10 @@ These are the point. The rest is plumbing.
    judgment, not a retry" that a person actually reads (a direct ntfy
    line that does NOT route through the control plane, so it survives
    the control plane being down or wrong). Hands are tracked durably
-   until resolved — by the human, or by the agent lowering its own
-   hand. Never penalized, never auto-remediated.
+   until resolved. Never penalized — and machinery never closes one: a
+   planning agent may answer a hand that asks only for facts (the
+   answer logged), but resolution comes from the human or from the
+   raising agent itself, and new decisions always reach a person.
 3. **No deception in the pipeline.** Reviews are adversarial toward
    code, never toward the author agent; no honeypot tests; system
    prompts and the in-repo contract tell agents the truth about their
@@ -94,13 +96,15 @@ board (output-rate spikes are the review-worthy "intensity" signal).
 
 ## Portability
 
-Todo, truthfully. Hostnames of one particular homelab (a Forgejo, an
-ntfy, two inference servers) are baked into defaults in `foldctl`,
-`board/server.py`, and the contract; credentials live in a single
-`~/coder-eval/bellwether.env`-style file (0600) referenced by
-convention. Everything is env-overridable in principle and
-config-file-driven in intent; making that fully real is the first task
-for any adopter — or for a fold agent. Docs: `docs/QUICKSTART.md`.
+Partial, truthfully. Deployment specifics — your Forgejo, your ntfy
+topic, repo paths, the board URL — live in `STATE_DIR/fold.env`
+(plain KEY=VALUE, never committed; process env overrides it), and
+inference servers in an endpoint registry (`endpoints.json`).
+Credentials live in one env-style file (0600) referenced by
+convention. What's still shaped like one homelab is the assumptions:
+a single host, incus with a `default` pool, a reverse proxy in front
+of the board. Loosening those is the first task for any adopter — or
+for a fold agent. Docs: `docs/QUICKSTART.md`.
 
 ## Provenance
 
