@@ -148,6 +148,7 @@
       <option value="fold-shepherd">fold-shepherd (Coder, legacy)</option>
       <option value="tasks-docker">tasks-docker (Coder, legacy)</option>
     </select>
+    <select id="repoSel" aria-label="Project repo"></select>
     <div style="display:flex; gap:.5rem;">
       <select id="llmSel" style="flex:1;" aria-label="Inference endpoint"></select>
       <select id="modelSel" style="flex:2;" aria-label="Model"></select>
@@ -224,7 +225,7 @@ function taskCard(t, colName) {
   const shep = (t.template||"").includes("shepherd");
   return `<div class="card${hand?" hand":""}${shep?" shepherd":""}">
     <div class="t">${t.prompt || t.name}</div>
-    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}</div>
+    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.project ? " " + chip("neutral", "⌂ " + t.project) : ""}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
 
@@ -293,6 +294,15 @@ function handCard(h) {
     <div class="m">${chip("attn", when)}${h.workspace ? " " + chip("neutral", h.workspace) : ""}${h.forwarded ? " " + chip("frozen", "→ " + h.forwarded.to) : ""}</div>
     <div class="a"><button class="quiet" onclick="resolveHand('${h.id}')">Resolve</button></div></div>`;
 }
+let repos = {}, repoDefault = null;
+function fillRepoSelect() {
+  const sel = $("#repoSel"); const names = Object.keys(repos);
+  sel.hidden = !names.length;
+  if (!names.length) return;
+  const keep = sel.value;
+  sel.innerHTML = names.map(n =>
+    `<option value="${n}"${n===(keep||repoDefault)?" selected":""}>${n}${n===repoDefault?" (default)":""} — ${repos[n]}</option>`).join("");
+}
 let endpoints = {}, llmDefault = {};
 function fillLlmSelects() {
   const lsel = $("#llmSel"), msel = $("#modelSel");
@@ -311,7 +321,8 @@ document.addEventListener("change", (e) => { if (e.target.id === "llmSel") { $("
 async function refresh() {
   const s = await fetch("/api/state").then(r=>r.json());
   endpoints = s.endpoints || {}; llmDefault = s.llm_default || {};
-  if (!$("#taskdlg").open) fillLlmSelects();
+  repos = s.repos || {}; repoDefault = s.repo_default || null;
+  if (!$("#taskdlg").open) { fillLlmSelects(); fillRepoSelect(); }
   $("#stats").innerHTML =
     chip("working", `${s.host.working}/${s.host.max_working} working`) +
     chip("neutral", `host ${s.host.avail_gib} GiB free`) +
@@ -368,6 +379,7 @@ $("#dispatchBtn").onclick = () => $("#dlg").showModal();
 $("#cancel").onclick = () => $("#dlg").close();
 $("#go").onclick = async () => {
   const body = {template: $("#tpl").value, prompt: $("#prompt").value.trim(),
+                repo: $("#repoSel").value || undefined,
                 llm: $("#llmSel").value || undefined,
                 model: $("#modelSel").value || undefined};
   if (!body.prompt) return toast("write the task first");

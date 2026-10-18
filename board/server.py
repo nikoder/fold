@@ -309,6 +309,7 @@ def state():
                           .get(probe.get("status"), None))
         slim.append({
             "name": name, "ctx": meta.get("ctx"),
+            "project": meta.get("project"),
             "model": meta.get("model"), "llm": meta.get("llm"),
             "template": f"native-{meta.get('flavor', 'agent')}",
             "workspace": name,
@@ -340,7 +341,14 @@ def state():
         eps = {}
     ep_summary = {k: v.get("models", []) for k, v in eps.items()
                   if not k.startswith("_")}
+    try:
+        rr = json.load(open(os.path.join(STATE_DIR, "repos.json")))
+    except (FileNotFoundError, json.JSONDecodeError):
+        rr = {}
+    repo_summary = {k: v.get("repo") for k, v in rr.items()
+                    if not k.startswith("_") and isinstance(v, dict)}
     return {"tasks": slim, "fleet": fleet, "hands": hands(),
+            "repos": repo_summary, "repo_default": rr.get("_default"),
             "endpoints": ep_summary, "llm_default": eps.get("_default", {}),
             "host": {"avail_gib": avail, "max_working": MAX_WORKING,
                      "working": working, "total_output_tokens": total_out}}
@@ -600,6 +608,10 @@ class H(BaseHTTPRequestHandler):
                 args += ["--llm", str(body["llm"])[:64]]
             if body.get("model"):
                 args += ["--model", str(body["model"])[:128]]
+            # project passes through by registry NAME; foldctl validates,
+            # so the agent plane picks projects but never clone targets
+            if body.get("repo"):
+                args += ["--repo", str(body["repo"])[:64]]
             return self._send(200, foldctl(*args, tpl, prompt))
         if self.path == "/api/resolve":
             if not body.get("id"):

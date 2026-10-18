@@ -3,7 +3,14 @@
 
 Commands:
   tasks                       list tasks with workspace + agent state
-  dispatch TEMPLATE PROMPT..  create a task from a template's active version
+  dispatch TEMPLATE PROMPT..  create a task; --repo picks the project
+                              (registry name from repos.json), --llm and
+                              --model the inference pair
+  repos                       list registered projects
+  repos add OWNER/NAME        register a work repo; --create makes it on
+                              the forge; also wires collaborators +
+                              branch protection. [--name <project>]
+                              [--review bellwether|human] [--default]
   pause WORKSPACE             freeze the workspace's incus instance (RAM kept,
                               inspectable, instantly resumable)
   resume WORKSPACE            unfreeze
@@ -97,6 +104,13 @@ def _creds_repo_guard():
         d = parent
     assoc = {v for v in (conf("FOLD_WORK_REPO"), conf("FOLD_SHEPHERD_REPO"))
              if v}
+    try:
+        rr = json.load(open(os.path.join(STATE_DIR, "repos.json")))
+        assoc |= {e.get("repo") for k, e in rr.items()
+                  if not k.startswith("_") and isinstance(e, dict)}
+        assoc.discard(None)
+    except (FileNotFoundError, json.JSONDecodeError):
+        pass
     try:
         r = subprocess.run(["git", "-C", d, "remote", "-v"],
                            capture_output=True, text=True)
@@ -233,6 +247,118 @@ def resolve_llm(llm=None, model=None):
     return ep["url"], key, m, name
 
 
+# Work repos are a registry too (STATE_DIR/repos.json: project name ->
+# {repo: owner/name, review: policy}, plus "_default"). Same principle
+# as endpoints: the agent plane picks project NAMES, never arbitrary
+# clone targets.
+REPOS_FILE = os.path.join(STATE_DIR, "repos.json")
+
+
+def repos():
+    try:
+        return json.load(open(REPOS_FILE))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def resolve_repo(project=None):
+    """(project_name, owner/repo) for a dispatch."""
+    reg = repos()
+    if not project:
+        project = reg.get("_default")
+        if not project:
+            # pre-registry deployments: fold.env names a single repo
+            path = conf("FOLD_WORK_REPO")
+            if path:
+                return path.rsplit("/", 1)[-1], path
+            sys.exit(f"no work repo: create {REPOS_FILE} (foldctl repos "
+                     "add ...) or set FOLD_WORK_REPO in fold.env")
+    entry = reg.get(project)
+    if not entry:
+        sys.exit(f"unknown project {project!r}; known: "
+                 f"{[k for k in reg if not k.startswith('_')]}")
+    return project, entry["repo"]
+
+
+def forgejo_api(path, method="GET", body=None, token=None):
+    req = urllib.request.Request(
+        f"{require('FOLD_FORGEJO', 'repo management')}/api/v1{path}",
+        method=method,
+        data=json.dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"token {token}",
+                 "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        data = r.read()
+        return json.loads(data) if data else {}
+
+
+def cmd_repos(rest):
+    if rest and rest[0] == "add":
+        rest = rest[1:]
+        path, create, review, name, default = None, False, "bellwether", None, False
+        while rest:
+            a, rest = rest[0], rest[1:]
+            if a == "--create":
+                create = True
+            elif a == "--default":
+                default = True
+            elif a == "--review":
+                review, rest = rest[0], rest[1:]
+            elif a == "--name":
+                name, rest = rest[0], rest[1:]
+            else:
+                path = a
+        if not path or "/" not in path:
+            sys.exit("usage: foldctl repos add <owner/name> [--create] "
+                     "[--name <project>] [--review bellwether|human] "
+                     "[--default]")
+        admin = cred("FOLD_SETUP_TOKEN")
+        if not admin:
+            sys.exit("FOLD_SETUP_TOKEN missing from creds file")
+        rname = path.rsplit("/", 1)[-1]
+        if create:
+            forgejo_api("/user/repos", "POST",
+                        {"name": rname, "private": True, "auto_init": True,
+                         "default_branch": "master"}, admin)
+            print(f"created {path}")
+        login = conf("FOLD_AUTHOR_LOGIN", "fold-alpha")
+        for collab in (login, "bellwether"):
+            forgejo_api(f"/repos/{path}/collaborators/{collab}", "PUT",
+                        {"permission": "write"}, admin)
+        print(f"collaborators: {login}, bellwether (write)")
+        # Merge policy lives in the forge: approval required, no direct
+        # pushes. Idempotence: the forge rejects a duplicate rule.
+        try:
+            forgejo_api(f"/repos/{path}/branch_protections", "POST",
+                        {"branch_name": "master", "rule_name": "master",
+                         "required_approvals": 1,
+                         "block_on_rejected_reviews": True,
+                         "enable_push": False}, admin)
+            print("branch protection: master, 1 approval, no direct push")
+        except urllib.error.HTTPError as e:
+            print(f"branch protection not added (HTTP {e.code} — "
+                  "may already exist)")
+        reg = repos()
+        key = name or rname
+        reg[key] = {"repo": path, "review": review}
+        if default or "_default" not in reg:
+            reg["_default"] = key
+        os.makedirs(STATE_DIR, exist_ok=True)
+        json.dump(reg, open(REPOS_FILE, "w"), indent=1)
+        print(f"registered project {key} -> {path} (review={review}"
+              + (", default" if reg["_default"] == key else "") + ")")
+        return
+    reg = repos()
+    if not any(not k.startswith("_") for k in reg):
+        sys.exit(f"no projects registered; see foldctl repos add")
+    d = reg.get("_default")
+    for k, v in sorted(reg.items()):
+        if k.startswith("_"):
+            continue
+        print(f"{k:20} {v['repo']:42} review={v.get('review', 'bellwether')}"
+              + ("  (default)" if k == d else ""))
+
+
 def opencode_config(url, key, model):
     return json.dumps({
         "$schema": "https://opencode.ai/config.json",
@@ -246,15 +372,15 @@ def opencode_config(url, key, model):
 
 
 def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
-                    llm=None, model=None):
+                    llm=None, model=None, repo=None):
     """Provision a fold-native agent: golden image, no Coder involved."""
     ensure_profile()
     url, key, model, ep_name = resolve_llm(llm, model)
+    project, work_repo = resolve_repo(repo)
     name = f"task-{int(time.time()) % 100000}"
     inst = f"fold-{name}"
     author = cred("FOLD_ALPHA_TOKEN")
     forge = require("FOLD_FORGEJO", "dispatch")
-    work_repo = require("FOLD_WORK_REPO", "dispatch")
     login = conf("FOLD_AUTHOR_LOGIN", "fold-alpha")
     forge_netloc = urllib.parse.urlparse(forge).netloc
     env = {
@@ -293,7 +419,8 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     reg = registry()
     reg[name] = {"flavor": flavor, "created": int(time.time()),
                  "prompt": prompt, "ctx": ctx,
-                 "llm": ep_name, "model": model}
+                 "llm": ep_name, "model": model,
+                 "project": project, "repo": work_repo}
     save_registry(reg)
     if ctx:
         ctx_file = os.path.join(STATE_DIR, "ctx.json")
@@ -399,7 +526,7 @@ def native_running():
 
 
 def cmd_dispatch(template, prompt, mem_gib=None, ctx=None,
-                 llm=None, model=None):
+                 llm=None, model=None, repo=None):
     # Admission control: inference slots (max working) + RAM headroom.
     # Frozen instances hold no slot: zero CPU, zero inference.
     frozen = frozen_workspaces()
@@ -417,7 +544,7 @@ def cmd_dispatch(template, prompt, mem_gib=None, ctx=None,
             sys.exit(f"admission: expects {need:.1f} GiB, host has "
                      f"{avail:.1f} GiB (2 GiB reserve)")
         return native_dispatch(template, prompt, mem_gib=mem_gib, ctx=ctx,
-                               llm=llm, model=model)
+                               llm=llm, model=model, repo=repo)
     if working >= MAX_WORKING:
         sys.exit(f"admission: {working} tasks already working "
                  f"(max {MAX_WORKING}); queue it or raise FOLD_MAX_WORKING")
@@ -581,9 +708,12 @@ def main():
         cmd_tasks()
     elif cmd == "memstats":
         cmd_memstats()
+    elif cmd == "repos":
+        cmd_repos(rest)
     elif cmd == "dispatch" and len(rest) >= 2:
-        mem, ctx, llm, model = None, None, None, None
-        while rest and rest[0] in ("--mem", "--ctx", "--llm", "--model"):
+        mem, ctx, llm, model, repo = None, None, None, None, None
+        while rest and rest[0] in ("--mem", "--ctx", "--llm", "--model",
+                                   "--repo"):
             flag, val, rest = rest[0], rest[1], rest[2:]
             if flag == "--mem":
                 mem = float(val)
@@ -591,10 +721,12 @@ def main():
                 ctx = val
             elif flag == "--llm":
                 llm = val
+            elif flag == "--repo":
+                repo = val
             else:
                 model = val
         cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem, ctx=ctx,
-                     llm=llm, model=model)
+                     llm=llm, model=model, repo=repo)
     elif cmd in ("pause", "resume", "stop", "start") and len(rest) == 1:
         {"pause": cmd_pause, "resume": cmd_resume,
          "stop": cmd_stop, "start": cmd_start}[cmd](rest[0])
