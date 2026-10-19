@@ -425,7 +425,10 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     for k, v in (("prompt", prompt), ("repo", repo),
                  ("env", json.dumps(env)),
                  ("opencode_config", opencode_config(url, key, model))):
-        incus("config", "set", inst, f"user.fold_{k}", v)
+        # key=value as ONE argument: a value starting with "--" (e.g. a
+        # prompt that begins with a mistyped flag) would otherwise be
+        # parsed by the incus CLI as a flag and abort mid-provision.
+        incus("config", "set", inst, f"user.fold_{k}={v}")
     incus("start", inst)
     reg = registry()
     reg[name] = {"flavor": flavor, "created": int(time.time()),
@@ -722,22 +725,31 @@ def main():
     elif cmd == "repos":
         cmd_repos(rest)
     elif cmd == "dispatch" and len(rest) >= 2:
-        mem, ctx, llm, model, repo = None, None, None, None, None
-        while rest and rest[0] in ("--mem", "--ctx", "--llm", "--model",
-                                   "--repo"):
-            flag, val, rest = rest[0], rest[1], rest[2:]
-            if flag == "--mem":
-                mem = float(val)
-            elif flag == "--ctx":
-                ctx = val
-            elif flag == "--llm":
-                llm = val
-            elif flag == "--repo":
-                repo = val
+        # Flags may appear before or after the template word; an unknown
+        # --flag is an error, never silently part of the prompt.
+        opts, pos = {}, []
+        known = {"--mem", "--ctx", "--llm", "--model", "--repo"}
+        while rest:
+            if len(pos) == 2:
+                # the prompt has begun: everything left is prose, even
+                # words that look like flags (prompts quote dispatch
+                # syntax, e.g. the shepherd contract examples)
+                pos[1] = pos[1] + " " + " ".join(rest)
+                rest = []
+            elif rest[0] in known and len(rest) >= 2:
+                opts[rest[0][2:]], rest = rest[1], rest[2:]
+            elif rest[0].startswith("--"):
+                sys.exit(f"unknown dispatch flag {rest[0]!r} "
+                         f"(known: {sorted(known)})")
             else:
-                model = val
-        cmd_dispatch(rest[0], " ".join(rest[1:]), mem_gib=mem, ctx=ctx,
-                     llm=llm, model=model, repo=repo)
+                pos.append(rest[0])
+                rest = rest[1:]
+        if len(pos) < 2:
+            sys.exit("dispatch needs TEMPLATE and PROMPT")
+        cmd_dispatch(pos[0], pos[1],
+                     mem_gib=float(opts["mem"]) if "mem" in opts else None,
+                     ctx=opts.get("ctx"), llm=opts.get("llm"),
+                     model=opts.get("model"), repo=opts.get("repo"))
     elif cmd in ("pause", "resume", "stop", "start") and len(rest) == 1:
         {"pause": cmd_pause, "resume": cmd_resume,
          "stop": cmd_stop, "start": cmd_start}[cmd](rest[0])
