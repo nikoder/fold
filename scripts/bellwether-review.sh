@@ -72,7 +72,13 @@ CHECK_TIMEOUT=$(conf timeout); CHECK_TIMEOUT=${CHECK_TIMEOUT:-300}
 # --- tooled stage: clone PR branch + run repo checks in an incus box ---
 incus delete -f "$CTR" 2>/dev/null || true
 incus launch -q "$IMAGE" "$CTR"
-sleep 4
+# Wait for the guest's network, not a fixed nap: alpine boots in ~2s but
+# debian cloud images need cloud-init to finish before DNS works — a
+# short sleep here silently produced "could not clone" no-evidence runs.
+for _ in $(seq 45); do
+  incus exec "$CTR" -- sh -c "(getent hosts $FORGE_HOST || nslookup $FORGE_HOST || ping -c1 -W1 $FORGE_HOST) >/dev/null 2>&1" && break
+  sleep 2
+done
 CHECK_STATUS="no .fold/check script in this branch; no checks were run"
 if incus exec "$CTR" -- sh -c "
     if command -v apk >/dev/null; then apk add -q $PKGS >/dev/null 2>&1;
@@ -130,7 +136,7 @@ req = urllib.request.Request(
     llm_url,
     data=json.dumps({
         "model": llm_model,
-        "max_tokens": 4000,
+        "max_tokens": 10000,
         "chat_template_kwargs": {"enable_thinking": False},
         "messages": [
             {"role": "system", "content": system},
