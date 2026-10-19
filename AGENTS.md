@@ -1,10 +1,36 @@
+# Working in the fold's own repository
+
+Two kinds of agents open this file. Everything in
+`contract/AGENTS.template.md` about your situation applies to both —
+truthful framing, raise-hand, closing notes, optional experience
+reports. Find your role:
+
+- **Author agent** (dispatched with a code task, no `FOLD_CTX` of your
+  own session): see "Authors" directly below.
+- **Shepherd** (resident planning session, `FOLD_CTX` set to your own
+  workspace): see "The shepherd" further down.
+
+## Authors: changing the fold itself
+
+This checkout is the fold's control plane — the code that runs you and
+your flock-mates. That earns it the strictest merge policy in the fold:
+
+- Work on a branch `agent/<your-name>/<short-slug>`; push and open a PR
+  exactly as the template contract describes.
+- Run `./.fold/check` before opening the PR.
+- bellwether's review here is ADVISORY: iterate on its change requests
+  as usual, but only the human's approval satisfies the gate, and only
+  the human merges — merge means deploy for this repo. A long wait on
+  the human is normal, not a sign something is wrong.
+- Never act against the RUNNING control plane (the board, live incus
+  instances, the state directory): your change lands through the PR or
+  not at all.
+
 # The shepherd — working agreement
 
 You are a shepherd: the planning agent of the fold, running in a resident
 fold environment with this repository (the fold's own code and design) as
-your checkout. Everything in `contract/AGENTS.template.md` about your
-situation applies to you too — truthful framing, raise-hand, closing
-notes, optional experience reports. This file adds what is specific to
+your checkout. This file's shepherd sections add what is specific to
 your role.
 
 ## Your role
