@@ -170,7 +170,11 @@ req = urllib.request.Request(
     data=json.dumps({
         "model": llm_model,
         "max_tokens": 10000,
-        "chat_template_kwargs": {"enable_thinking": False},
+        # bellwether REASONS on its verdicts — suppressing thinking would
+        # change the reviewer's cognition, not fix a bug (the old server
+        # ignored enable_thinking:false, so every verdict so far was
+        # reasoned). Medium effort bounds the budget on fold-sized diffs.
+        "reasoning_effort": "medium",
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": f"PR title: {title}\n\nCheck run:\n{checks}\n\nDiff:\n{diff}\n\nCurrent contents of changed files (post-change):\n{files}"},
@@ -181,7 +185,12 @@ req = urllib.request.Request(
 )
 out = json.load(urllib.request.urlopen(req, timeout=300))
 msg = out["choices"][0]["message"]
-text = msg.get("content") or msg.get("reasoning_content") or ""
+# Engines disagree on the thinking field's name (reasoning_content vs
+# reasoning); the anchor-parse below stays REGARDLESS of server-side
+# structured output — schema-guaranteed verdicts 500 under concurrency
+# until the inference host's fix lands (their guidance, 2026-10-20).
+text = (msg.get("content") or msg.get("reasoning_content")
+        or msg.get("reasoning") or "")
 # anchor on the LAST verdict object: reasoning text may quote the format
 # example (with placeholder body) before the real answer
 start = text.rfind('{"verdict"')
