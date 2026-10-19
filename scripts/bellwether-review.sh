@@ -71,16 +71,26 @@ CHECK_TIMEOUT=$(conf timeout); CHECK_TIMEOUT=${CHECK_TIMEOUT:-300}
 
 # --- tooled stage: clone PR branch + run repo checks in an incus box ---
 incus delete -f "$CTR" 2>/dev/null || true
-incus launch -q "$IMAGE" "$CTR"
+# The intercepts matter on systemd images: without setxattr, journald
+# never reports ready, boot wedges, cloud-init never configures DNS, and
+# the clone fails with no obvious cause (same lesson as build-image.sh).
+# Harmless on alpine.
+incus launch -q "$IMAGE" "$CTR" \
+  -c security.syscalls.intercept.setxattr=true \
+  -c security.syscalls.intercept.mknod=true
 # Wait for the guest's network, not a fixed nap: alpine boots in ~2s but
-# debian cloud images need cloud-init to finish before DNS works — a
-# short sleep here silently produced "could not clone" no-evidence runs.
+# systemd/cloud-init images take tens of seconds before DNS works.
+NET_OK=""
 for _ in $(seq 45); do
-  incus exec "$CTR" -- sh -c "(getent hosts $FORGE_HOST || nslookup $FORGE_HOST || ping -c1 -W1 $FORGE_HOST) >/dev/null 2>&1" && break
+  if incus exec "$CTR" -- sh -c "(getent hosts $FORGE_HOST || nslookup $FORGE_HOST || ping -c1 -W1 $FORGE_HOST) >/dev/null 2>&1"; then
+    NET_OK=1; break
+  fi
   sleep 2
 done
 CHECK_STATUS="no .fold/check script in this branch; no checks were run"
-if incus exec "$CTR" -- sh -c "
+if [ -z "$NET_OK" ]; then
+  CHECK_STATUS="check container networking never came up within 90s; no checks were run (container $CTR kept for inspection)"
+elif incus exec "$CTR" -- sh -c "
     if command -v apk >/dev/null; then apk add -q $PKGS >/dev/null 2>&1;
     else apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y $PKGS >/dev/null 2>&1; fi &&
     git clone -q --depth 1 --branch '$HEADREF' \
