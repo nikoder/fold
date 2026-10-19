@@ -71,11 +71,12 @@ CHECK_TIMEOUT=$(conf timeout); CHECK_TIMEOUT=${CHECK_TIMEOUT:-300}
 
 # --- tooled stage: clone PR branch + run repo checks in an incus box ---
 incus delete -f "$CTR" 2>/dev/null || true
-# The intercepts matter on systemd images: without setxattr, journald
-# never reports ready, boot wedges, cloud-init never configures DNS, and
-# the clone fails with no obvious cause (same lesson as build-image.sh).
-# Harmless on alpine.
+# systemd images need ALL THREE of these or boot wedges before DHCP/DNS
+# (no nesting: systemd stuck "initializing"; no setxattr: journald never
+# reports ready — measured here, and the same lesson as build-image.sh).
+# All harmless on alpine.
 incus launch -q "$IMAGE" "$CTR" \
+  -c security.nesting=true \
   -c security.syscalls.intercept.setxattr=true \
   -c security.syscalls.intercept.mknod=true
 # Wait for the guest's network, not a fixed nap: alpine boots in ~2s but
