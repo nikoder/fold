@@ -89,8 +89,10 @@ for _ in $(seq 45); do
   sleep 2
 done
 CHECK_STATUS="no .fold/check script in this branch; no checks were run"
+HARNESS_FAIL=""
 if [ -z "$NET_OK" ]; then
-  CHECK_STATUS="check container networking never came up within 90s; no checks were run (container $CTR kept for inspection)"
+  CHECK_STATUS="check container networking never came up within 90s (container $CTR kept for inspection)"
+  HARNESS_FAIL=1
 elif incus exec "$CTR" -- sh -c "
     if command -v apk >/dev/null; then apk add -q $PKGS >/dev/null 2>&1;
     else apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y $PKGS >/dev/null 2>&1; fi &&
@@ -119,8 +121,28 @@ $(tail -c 2000 "$CHECKFILE")"
     incus delete -f "$CTR"
   fi
 else
-  CHECK_STATUS="could not clone branch '$HEADREF' into the check container"
-  incus delete -f "$CTR"
+  CHECK_STATUS="could not install packages or clone branch '$HEADREF' (container $CTR kept for inspection)"
+  HARNESS_FAIL=1
+fi
+
+# --- harness failures raise a hand, they do not become verdicts ---
+# When the reviewer's OWN tooling failed, there is no evidence about the
+# code, and the verdict stage sits downstream of the same broken harness
+# — the cry-for-help must not depend on it. Deterministic hand, review
+# deferred. (A FAILING .fold/check is different: that is evidence, and
+# it goes to the verdict.) The distinct "bellwether-harness" identity
+# keeps the matching hand-down from resolving real escalation hands.
+if [ -n "$HARNESS_FAIL" ]; then
+  if [ -n "$NTFY" ]; then
+    NTFY_TOKEN=$(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
+    curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
+      -H "Title: raise-hand: bellwether-harness" \
+      -d "PR #$PR ($REPO): review harness failure — $CHECK_STATUS. Review deferred; no verdict posted. Fix the harness and re-run." \
+      "$NTFY" >/dev/null
+  fi
+  echo "harness failure: $CHECK_STATUS" >&2
+  echo "hand raised; review deferred (no verdict posted)" >&2
+  exit 3
 fi
 
 # --- verdict stage: fresh LLM context judges diff + check results ---
@@ -199,4 +221,12 @@ req = urllib.request.Request(
 resp = json.load(urllib.request.urlopen(req, timeout=60))
 print(f"posted review id={resp['id']} state={resp['state']}")
 EOF
+# A completed run means any earlier harness hand is moot: lower it on
+# the same channel (no-op when none is open; the plain "bellwether"
+# escalation identity is untouched and stays with the human).
+if [ -n "$NTFY" ]; then
+  curl -s -H "Authorization: Bearer $(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})" \
+    -H "Title: hand-down: bellwether-harness" \
+    -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
+fi
 echo "verdict: $EVENT"
