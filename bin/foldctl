@@ -317,6 +317,17 @@ def cmd_repos(rest):
             sys.exit("FOLD_SETUP_TOKEN missing from creds file")
         rname = path.rsplit("/", 1)[-1]
         if create:
+            # /user/repos creates under the TOKEN's account regardless of
+            # the owner typed — creating elsewhere would register a path
+            # that doesn't match what was made. Ownership enforcement IS
+            # the token's privileges; this check just makes it legible.
+            me = forgejo_api("/user", token=admin).get("login", "")
+            owner = path.split("/", 1)[0]
+            if owner != me:
+                sys.exit(f"--create makes repos under the forge token's "
+                         f"account ({me}); cannot create {path}. Register "
+                         "an existing repo instead, or create it as "
+                         f"{me}/{rname}.")
             forgejo_api("/user/repos", "POST",
                         {"name": rname, "private": True, "auto_init": True,
                          "default_branch": "master"}, admin)
