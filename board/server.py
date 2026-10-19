@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """fold board v0 — the control plane's web face.
 
-Read-only state comes straight from Coder and incus; every mutation
-shells out to foldctl, so the CLI remains the single audited mutation
-path (and the board inherits admission control and pause-default for
-free).
+Read-only state comes straight from incus and the task registry; every
+mutation shells out to foldctl, so the CLI remains the single audited
+mutation path (and the board inherits admission control and
+pause-default for free).
 
 Human access is the reverse-proxy front door (basic auth + injected
-X-Fold-Human header); loopback and the agent bearer plane also work. Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT,
-FOLD_CODER_URL, FOLD_CODER_TOKEN_FILE, FOLD_MAX_WORKING.
+X-Fold-Human header); loopback and the agent bearer plane also work.
+Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT, FOLD_MAX_WORKING.
 """
 import json
 import os
@@ -21,13 +21,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FOLDCTL = os.path.join(HERE, "..", "bin", "foldctl")
-CODER = os.environ.get("FOLD_CODER_URL", "http://localhost:7081")
-TOKEN_FILE = os.path.expanduser(
-    os.environ.get("FOLD_CODER_TOKEN_FILE", "~/coder-eval/.api-token-tasks"))
-try:
-    TOKEN = open(TOKEN_FILE).read().strip()
-except FileNotFoundError:
-    TOKEN = ""  # no Coder in this deployment: native-only
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
 ALLOWED_VERBS = {"pause", "resume", "stop", "start"}
 CREDS = os.path.expanduser(
@@ -238,13 +231,6 @@ def resolve_hand(hand_id):
         _save_hands(store)
 
 
-def coder(path):
-    req = urllib.request.Request(
-        f"{CODER}{path}", headers={"Coder-Session-Token": TOKEN})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.load(r)
-
-
 def incus_instances():
     r = subprocess.run(
         ["incus", "query", "/1.0/instances?recursion=2"],
@@ -253,7 +239,7 @@ def incus_instances():
         return []
     out = []
     for i in json.loads(r.stdout):
-        if not i["name"].startswith(("coder-", "fold-")):
+        if not i["name"].startswith("fold-"):
             continue
         mem = ((i.get("state") or {}).get("memory") or {}).get("usage", 0)
         out.append({"name": i["name"], "status": i["status"],
@@ -262,38 +248,16 @@ def incus_instances():
 
 
 def state():
-    # Coder being gone (retired, or token expired) must never take the
-    # native fleet down with it: degrade to native-only.
-    try:
-        d = coder("/api/experimental/tasks?owner=me")
-    except Exception:
-        d = []
-    tasks = d if isinstance(d, list) else d.get("tasks", [])
     ctx = task_ctx()
     fleet = incus_instances()
-    # Coder doesn't know about incus freeze: overlay it. A frozen task is
-    # not working (zero CPU, zero inference) and must not hold a slot.
-    frozen_ws = {(f["name"][5:] if f["name"].startswith("fold-")
-                  else f["name"].split("-", 2)[2])
-                 for f in fleet
-                 if f["status"] == "Frozen" and f["name"].count("-") >= 2}
-    inst_state = {(f["name"][5:] if f["name"].startswith("fold-")
-                   else f["name"].split("-", 2)[2]): f["status"]
-                  for f in fleet if f["name"].count("-") >= 2}
-    slim = [{
-        "name": t["name"],
-        "ctx": ctx.get(t["name"]),
-        "template": t.get("template_name", ""),
-        "workspace": t["workspace_name"],
-        "prompt": (t.get("initial_prompt") or t.get("prompt") or
-                   t.get("display_name") or "")[:140],
-        "ws_status": t["workspace_status"],
-        "frozen": t["workspace_name"].lower() in frozen_ws,
-        "agent": t.get("workspace_agent_lifecycle"),
-        "task_state": (t.get("current_state") or {}).get("state"),
-        "updated": t.get("updated_at", ""),
-    } for t in tasks]
-    # fold-native tasks: registry identity + live incus/agentapi state.
+    # A frozen instance is not working (zero CPU, zero inference): it
+    # must not hold a working slot.
+    frozen_ws = {f["name"][5:] for f in fleet
+                 if f["status"] == "Frozen" and f["name"].startswith("fold-")}
+    inst_state = {f["name"][5:]: f["status"]
+                  for f in fleet if f["name"].startswith("fold-")}
+    slim = []
+    # Registry identity + live incus/agentapi state.
     try:
         reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
     except (FileNotFoundError, json.JSONDecodeError):
@@ -417,17 +381,10 @@ def archive_transcripts():
     while True:
         try:
             try:
-                d = coder("/api/experimental/tasks?owner=me")
-            except Exception:
-                d = []  # native tasks must still get archived
-            tasks = d if isinstance(d, list) else d.get("tasks", [])
-            try:
                 tokens = json.load(open(TOKENS_FILE))
             except (FileNotFoundError, json.JSONDecodeError):
                 tokens = {}
             dirty = False
-            live = [t["workspace_name"] for t in tasks
-                    if t["workspace_status"] == "running"]
             try:
                 reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
             except (FileNotFoundError, json.JSONDecodeError):
@@ -435,7 +392,7 @@ def archive_transcripts():
             running_native = {i["name"][5:] for i in incus_instances()
                               if i["name"].startswith("fold-")
                               and i["status"] == "Running"}
-            live += [n for n in reg if n.lower() in running_native]
+            live = [n for n in reg if n.lower() in running_native]
             for ws in live:
                 _harvest_tokens(ws, tokens)
                 dirty = True
@@ -466,9 +423,7 @@ def instance_ip(ws):
     for i in json.loads(subprocess.run(
             ["incus", "query", "/1.0/instances?recursion=2"],
             capture_output=True, text=True).stdout or "[]"):
-        if i["name"] == f"fold-{ws.lower()}" or (
-                i["name"].startswith("coder-") and
-                i["name"].endswith(f"-{ws.lower()}")):
+        if i["name"] == f"fold-{ws.lower()}":
             eth0 = (((i.get("state") or {}).get("network") or {})
                     .get("eth0") or {})
             for a in eth0.get("addresses", []):

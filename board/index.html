@@ -146,9 +146,6 @@
     <select id="tpl">
       <option value="agent">agent (fold-native, golden image)</option>
       <option value="shepherd">shepherd (fold-native planning session)</option>
-      <option value="fold-incus">fold-incus (Coder, legacy)</option>
-      <option value="fold-shepherd">fold-shepherd (Coder, legacy)</option>
-      <option value="tasks-docker">tasks-docker (Coder, legacy)</option>
     </select>
     <select id="repoSel" aria-label="Project repo"></select>
     <div style="display:flex; gap:.5rem;">
@@ -387,7 +384,7 @@ async function refresh() {
     `<tr><th>environment</th><th>state</th><th>memory</th><th></th></tr>` +
     s.fleet.map(f => {
       const cls = {Running:"working", Frozen:"frozen", Stopped:"neutral"}[f.status] || "neutral";
-      const ws = f.name.replace(/^coder-[^-]+-/, "");
+      const ws = f.name.replace(/^fold-/, "");
       const btn = f.status==="Frozen"
         ? `<button class="quiet" onclick="act('resume','${ws}')">Resume</button>`
         : f.status==="Running"
