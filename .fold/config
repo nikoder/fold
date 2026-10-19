@@ -1,0 +1,6 @@
+# Check container for bellwether. fold-agent-base would boot the agent
+# service pointlessly; the pinned builder image is the quiet choice —
+# and NEVER a remote images: alias (runtime update-check stalls).
+image=fold-builder-base
+packages=git python3 bash
+timeout=300
