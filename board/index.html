@@ -95,7 +95,8 @@
            color:var(--ink); padding:1rem; width:min(460px,90vw); }
   dialog::backdrop { background:rgba(20,25,18,.45); }
   dialog h4 { margin:.1rem 0 .8rem; font-family:"Bricolage Grotesque",sans-serif; }
-  dialog select, dialog textarea { width:100%; font:inherit; font-size:.8rem;
+  dialog select, dialog textarea, dialog input:not([type=checkbox]) {
+    width:100%; font:inherit; font-size:.8rem;
     background:var(--raised); color:var(--ink); border:1px solid var(--line);
     border-radius:6px; padding:.45em .6em; box-sizing:border-box; margin-bottom:.6rem; }
   dialog textarea { min-height:90px; resize:vertical; }
@@ -122,6 +123,7 @@
   <div class="topbar">
     <span class="wordmark">fold</span>
     <div class="stats" id="stats"></div>
+    <button class="quiet" id="projBtn">Projects</button>
     <button id="dispatchBtn">Dispatch task</button>
   </div>
   <nav class="tabs">
@@ -157,6 +159,25 @@
     <div class="drow">
       <button class="quiet" id="cancel">Cancel</button>
       <button id="go">Dispatch</button>
+    </div>
+  </dialog>
+  <dialog id="projdlg">
+    <h4>Projects</h4>
+    <table id="projList" style="width:100%; font-size:.78rem; border-collapse:collapse; margin-bottom:.9rem;"></table>
+    <h4>Register a repo</h4>
+    <input id="projPath" placeholder="owner/name on the forge">
+    <div style="display:flex; gap:.5rem;">
+      <input id="projName" placeholder="project name (default: repo name)" style="flex:1;">
+      <select id="projReview" style="flex:1;">
+        <option value="bellwether">review: bellwether</option>
+        <option value="human">review: human (merge-means-deploy)</option>
+      </select>
+    </div>
+    <label style="font-size:.78rem; display:block; margin-bottom:.3rem;"><input type="checkbox" id="projCreate"> create the repo on the forge (else it must exist)</label>
+    <label style="font-size:.78rem; display:block; margin-bottom:.6rem;"><input type="checkbox" id="projDefault"> make it the dispatch default</label>
+    <div class="drow">
+      <button class="quiet" id="projClose">Close</button>
+      <button id="projAdd">Register</button>
     </div>
   </dialog>
   <dialog id="taskdlg">
@@ -375,6 +396,28 @@ async function refresh() {
               <td class="mono">${f.mem_mib ? f.mem_mib + " MiB" : "—"}</td><td>${btn}</td></tr>`;
     }).join("");
 }
+function renderProjects() {
+  $("#projList").innerHTML = `<tr style="text-align:left; color:var(--soft);"><th>project</th><th>repo</th></tr>` +
+    (Object.keys(repos).length ? Object.entries(repos).map(([k, v]) =>
+      `<tr><td>${k}${k===repoDefault ? " ★" : ""}</td><td class="mono">${v}</td></tr>`).join("")
+     : `<tr><td colspan="2" style="color:var(--soft);">none registered yet</td></tr>`);
+}
+$("#projBtn").onclick = () => { renderProjects(); $("#projdlg").showModal(); };
+$("#projClose").onclick = () => $("#projdlg").close();
+$("#projAdd").onclick = async () => {
+  const body = {path: $("#projPath").value.trim(),
+                name: $("#projName").value.trim() || undefined,
+                review: $("#projReview").value,
+                create: $("#projCreate").checked || undefined,
+                default: $("#projDefault").checked || undefined};
+  if (!/^[\w.-]+\/[\w.-]+$/.test(body.path)) return toast("owner/name required");
+  toast("registering…");
+  const r = await fetch("/api/repos/add", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)})
+    .then(r=>r.json());
+  toast(r.out || (r.ok ? "registered" : "failed"));
+  await refresh(); renderProjects();
+};
 $("#dispatchBtn").onclick = () => $("#dlg").showModal();
 $("#cancel").onclick = () => $("#dlg").close();
 $("#go").onclick = async () => {

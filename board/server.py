@@ -613,6 +613,23 @@ class H(BaseHTTPRequestHandler):
             if body.get("repo"):
                 args += ["--repo", str(body["repo"])[:64]]
             return self._send(200, foldctl(*args, tpl, prompt))
+        if self.path == "/api/repos/add":
+            # Deliberately NOT in AGENT_PLANE_PATHS: registering repos
+            # (and creating them on the forge) is a human decision.
+            path = (body.get("path") or "").strip()
+            if not re.fullmatch(r"[\w.-]+/[\w.-]+", path):
+                return self._send(400, {"error": "path must be owner/name"})
+            args = ["repos", "add", path]
+            if body.get("create"):
+                args.append("--create")
+            if body.get("default"):
+                args.append("--default")
+            if body.get("review") in ("bellwether", "human"):
+                args += ["--review", body["review"]]
+            name = str(body.get("name") or "")[:32]
+            if name and re.fullmatch(r"[\w-]+", name):
+                args += ["--name", name]
+            return self._send(200, foldctl(*args))
         if self.path == "/api/resolve":
             if not body.get("id"):
                 return self._send(400, {"error": "id required"})
