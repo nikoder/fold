@@ -276,6 +276,7 @@ fi
 if [ -n "$NTFY" ]; then
   curl -s -H "Authorization: Bearer $(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})" \
     -H "Title: hand-down: bellwether-harness" \
+    -H "Priority: min" \
     -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
 fi
 echo "verdict: $EVENT"

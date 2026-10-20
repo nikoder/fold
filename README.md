@@ -81,6 +81,27 @@ Inference is per-task selectable from an endpoint registry
 harvested per task from the harness's own records and shown on the
 board (output-rate spikes are the review-worthy "intensity" signal).
 
+## Trust model
+
+Agents read untrusted text — diffs, check output, PR reviews and
+comments — and no input filtering makes that safe against a language
+model. fold's defense is **capability bounding**: enumerate what a
+fully hijacked agent could do, and make that list boring. An author
+holds only its own forge token (branch push, PR comments) and its
+raise-hand line; it cannot merge, cannot push protected branches,
+cannot reach the control plane, and works inside a container behind an
+egress ACL. The review pipeline downstream *assumes* authors may
+produce bad changes — that is what it is for. Review-feedback routing
+is registry-owned (dispatch assigns the branch and remembers it), so
+nothing an agent writes can redirect messages into another agent's
+session, and only formal reviews — deliberate acts by collaborators —
+ever notify an author; drive-by comments don't.
+
+One boundary is explicit: this holds while commenters are your own
+collaborator list. **Before any fold-managed repo accepts outside
+contributors**, add a control-plane-mediated fetch so authors receive
+only reviews by the reviewers of record, not arbitrary PR text.
+
 ## What's in the box
 
 | Path | What |
