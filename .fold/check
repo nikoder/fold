@@ -1,8 +1,10 @@
 #!/bin/sh -e
 # fold's own verification. Humble on purpose: deep correctness gates
 # live in review; this catches the breakage class that has actually
-# bitten here (syntax/regression in stdlib-only Python, POSIX-ish shell).
+# bitten here (syntax/regression in stdlib-only Python, POSIX-ish shell)
+# and the dispatch CLI parse contract (scripts/test-cli-parse.py).
 python3 -m py_compile bin/foldctl board/server.py scripts/token-backfill.py
 bash -n scripts/bellwether-review.sh scripts/build-image.sh \
         scripts/egress-report.sh image/fold-boot.sh
+python3 scripts/test-cli-parse.py
 echo "fold check: compile + parse OK"
