@@ -26,12 +26,12 @@ NTFY=${FOLD_NTFY:-$(fold_env FOLD_NTFY)}
 : "${REPO:?set FOLD_REPO (or FOLD_WORK_REPO in $STATE/fold.env)}"
 : "${FORGEJO:?set FOLD_FORGEJO (env or $STATE/fold.env)}"
 FORGE_HOST=${FORGEJO#*://}
-TOKEN=$(grep -oP 'BELLWETHER_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
+TOKEN=$(grep -oP 'BELLWETHER_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})
 CTR="bellwether-pr$PR"
 # Inference endpoint: FOLD_REVIEW_* env wins; otherwise the fold's
 # endpoint registry default.
 if [ -z "${FOLD_REVIEW_URL:-}" ] && [ -f "$STATE/endpoints.json" ]; then
-  eval "$(python3 - "$STATE/endpoints.json" "${FOLD_CREDS:-$HOME/coder-eval/bellwether.env}" <<'PY'
+  eval "$(python3 - "$STATE/endpoints.json" "${FOLD_CREDS:-$HOME/.config/fold/creds.env}" <<'PY'
 import json, re, sys
 eps = json.load(open(sys.argv[1]))
 d = eps.get("_default", {})
@@ -134,7 +134,7 @@ fi
 # keeps the matching hand-down from resolving real escalation hands.
 if [ -n "$HARNESS_FAIL" ]; then
   if [ -n "$NTFY" ]; then
-    NTFY_TOKEN=$(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
+    NTFY_TOKEN=$(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})
     curl -s -H "Authorization: Bearer $NTFY_TOKEN" \
       -H "Title: raise-hand: bellwether-harness" \
       -d "PR #$PR ($REPO): review harness failure — $CHECK_STATUS. Review deferred; no verdict posted. Fix the harness and re-run." \
@@ -224,7 +224,7 @@ EOF
 # escalate = bellwether's raise-hand: comment (not approve/reject) + ntfy ping.
 EVENT=$(python3 -c 'import json,sys;v=json.loads(sys.argv[1])["verdict"];print({"approve":"APPROVED","request_changes":"REQUEST_CHANGES","escalate":"COMMENT"}[v])' "$REVIEW")
 if [ "$EVENT" = "COMMENT" ] && [ -n "$NTFY" ]; then
-  NTFY_TOKEN=$(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})
+  NTFY_TOKEN=$(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})
   curl -s -H "Authorization: Bearer $NTFY_TOKEN" -H "Title: raise-hand: bellwether" \
     -d "PR #$PR ($REPO): escalating to human review." "$NTFY" >/dev/null
 fi
@@ -245,7 +245,7 @@ EOF
 # the same channel (no-op when none is open; the plain "bellwether"
 # escalation identity is untouched and stays with the human).
 if [ -n "$NTFY" ]; then
-  curl -s -H "Authorization: Bearer $(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/coder-eval/bellwether.env})" \
+  curl -s -H "Authorization: Bearer $(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})" \
     -H "Title: hand-down: bellwether-harness" \
     -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
 fi

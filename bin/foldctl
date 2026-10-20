@@ -27,7 +27,7 @@ process env overrides it. Keys:
   FOLD_BOARD_URL      http://<incus-bridge-ip>:7070  (shepherds only)
   FOLD_AUTHOR_EMAIL   agent commit email (default: <login>@fold.invalid)
 Plus plain env config:
-  FOLD_CREDS       (~/coder-eval/bellwether.env)   # tokens, 0600
+  FOLD_CREDS       (~/.config/fold/creds.env)   # tokens, 0600
 """
 import json
 import os
@@ -39,7 +39,7 @@ import urllib.parse
 import urllib.request
 
 CREDS = os.path.expanduser(
-    os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
+    os.environ.get("FOLD_CREDS", "~/.config/fold/creds.env"))
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
 STATE_DIR = os.path.expanduser(
     os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))

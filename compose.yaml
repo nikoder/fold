@@ -2,8 +2,9 @@
 #   docker compose up -d --build
 #
 # Host networking: humans enter through the reverse-proxy front door
-# (basic auth); the raw port is deny-by-default for everything else. Mutations go through foldctl, which needs
-# the incus socket.
+# (whatever auth gate it runs, injecting X-Fold-Human on success); the
+# raw port is deny-by-default for everything else. Mutations go through
+# foldctl, which needs the incus socket.
 services:
   board:
     build: ./board
@@ -15,13 +16,13 @@ services:
       # sessions on the incus bridge) needs the agent-plane bearer token
       # and gets dispatch + messaging only.
       FOLD_BOARD_BIND: ${FOLD_BOARD_BIND:-0.0.0.0}
-      FOLD_CREDS: /creds/bellwether.env
+      FOLD_CREDS: /creds/creds.env
       FOLD_STATE_DIR: /state
       FOLD_MAX_WORKING: ${FOLD_MAX_WORKING:-6}
     volumes:
       - ./:/app:ro
       - /var/lib/incus/unix.socket:/var/lib/incus/unix.socket
-      - ${FOLD_CREDS_DIR:-~/coder-eval}:/creds:ro
+      - ${FOLD_CREDS_DIR:-~/.config/fold}:/creds:ro
       # One state store shared with host-side foldctl (registry, hands,
       # tokens, ctx, memstats) — a named volume would split them.
       - ${FOLD_STATE_DIR_HOST:-~/.local/state/fold}:/state

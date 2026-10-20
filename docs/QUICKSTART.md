@@ -21,8 +21,8 @@ Portability in the README for what is still assumed.
    token for the author agent, one for the reviewer, an ntfy write-only
    token for topic `fold` (+ a read-only one for the board), the
    board's agent-plane bearer token, the human-plane header secret, and
-   your inference keys. The default path (`~/coder-eval/bellwether.env`)
-   is a fossil of the fold's own history; set `FOLD_CREDS` to move it.
+   your inference keys. Default path `~/.config/fold/creds.env`; set
+   `FOLD_CREDS` to move it.
    **Never put this file inside a git repository.** If it sits inside
    a checkout of a repo agents work on, every agent clone would carry
    your keys — foldctl and the board REFUSE to run in that case
@@ -55,8 +55,10 @@ Portability in the README for what is still assumed.
    `~/.local/state/fold/`) naming your inference endpoints, models, and
    the default pair.
 7. **Board**: `docker compose up -d --build` from the repo root. Put
-   basic auth + an injected `X-Fold-Human` header secret on a reverse
-   proxy route; loopback and the agent bearer plane work as-is.
+   an auth gate on a reverse-proxy route (anything from basic auth to a
+   WebAuthn forward_auth service) that injects the `X-Fold-Human`
+   header secret on success; loopback and the agent bearer plane work
+   as-is.
 8. **Contract**: copy `contract/AGENTS.template.md` into each repo
    agents will work on (as `AGENTS.md`), add a `.fold/check`
    (executable, exit 0 = pass) and `.fold/config` (image/packages/

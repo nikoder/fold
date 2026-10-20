@@ -6,9 +6,10 @@ mutation shells out to foldctl, so the CLI remains the single audited
 mutation path (and the board inherits admission control and
 pause-default for free).
 
-Human access is the reverse-proxy front door (basic auth + injected
-X-Fold-Human header); loopback and the agent bearer plane also work.
-Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT, FOLD_MAX_WORKING.
+Human access is the reverse-proxy front door: the proxy authenticates
+the human (any gate works — ours is a WebAuthn key-tap) and injects the
+X-Fold-Human secret header. Loopback and the agent bearer plane also
+work. Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT, FOLD_MAX_WORKING.
 """
 import json
 import os
@@ -24,7 +25,7 @@ FOLDCTL = os.path.join(HERE, "..", "bin", "foldctl")
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
 ALLOWED_VERBS = {"pause", "resume", "stop", "start"}
 CREDS = os.path.expanduser(
-    os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
+    os.environ.get("FOLD_CREDS", "~/.config/fold/creds.env"))
 STATE_DIR = os.path.expanduser(
     os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
 
@@ -487,9 +488,9 @@ class H(BaseHTTPRequestHandler):
         """True if this request may proceed; sends the refusal itself."""
         if self.client_address[0].startswith("127."):
             return True
-        # Human plane via the reverse proxy: Caddy performs basic auth and
-        # injects this secret; browsers can't forge it past Caddy because
-        # the route always overwrites the header.
+        # Human plane via the reverse proxy: it authenticates the human
+        # and injects this secret; browsers can't forge it past the proxy
+        # because the route always overwrites the header.
         hs = self._human_secret()
         if hs and self.headers.get("X-Fold-Human") == hs:
             return True
