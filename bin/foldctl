@@ -14,9 +14,7 @@ Commands:
   pause WORKSPACE             freeze the workspace's incus instance (RAM kept,
                               inspectable, instantly resumable)
   resume WORKSPACE            unfreeze
-  stop WORKSPACE              graceful stop via Coder (end-of-task lifecycle)
-  watch [--once]              poll tasks; on failure: notify + pause. NEVER
-                              deletes anything — deletion is a human act.
+  stop WORKSPACE              graceful stop (end-of-task lifecycle)
 
 Deployment specifics (your Forgejo, your ntfy, repo paths, board URL)
 live OUTSIDE this repo in STATE_DIR/fold.env — plain KEY=VALUE lines;
@@ -28,8 +26,6 @@ process env overrides it. Keys:
   FOLD_NTFY           https://ntfy.example.com/fold  (full topic URL)
   FOLD_BOARD_URL      http://<incus-bridge-ip>:7070  (shepherds only)
 Plus plain env config:
-  FOLD_CODER_URL   (http://localhost:7081)
-  FOLD_CODER_TOKEN_FILE (~/coder-eval/.api-token-tasks)
   FOLD_CREDS       (~/coder-eval/bellwether.env)   # tokens, 0600
 """
 import json
@@ -41,15 +37,8 @@ import time
 import urllib.parse
 import urllib.request
 
-CODER = os.environ.get("FOLD_CODER_URL", "http://localhost:7081")
-TOKEN_FILE = os.path.expanduser(
-    os.environ.get("FOLD_CODER_TOKEN_FILE", "~/coder-eval/.api-token-tasks"))
 CREDS = os.path.expanduser(
     os.environ.get("FOLD_CREDS", "~/coder-eval/bellwether.env"))
-try:
-    TOKEN = open(TOKEN_FILE).read().strip()
-except FileNotFoundError:
-    TOKEN = ""  # no Coder in this deployment: native-only
 MAX_WORKING = int(os.environ.get("FOLD_MAX_WORKING", "6"))
 STATE_DIR = os.path.expanduser(
     os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
@@ -132,15 +121,6 @@ def _creds_repo_guard():
 _creds_repo_guard()
 
 
-def api(path, method="GET", body=None):
-    req = urllib.request.Request(
-        f"{CODER}{path}", method=method,
-        data=json.dumps(body).encode() if body is not None else None,
-        headers={"Coder-Session-Token": TOKEN, "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.load(r)
-
-
 def ntfy(title, message):
     if not NTFY:
         print(f"[ntfy skipped — FOLD_NTFY not set] {title}: {message}",
@@ -182,11 +162,7 @@ def cred(name):
 
 
 def instance_name(ws):
-    if ws in registry():
-        return f"fold-{ws.lower()}"
-    # Coder incus template convention: coder-<owner>-<workspace>
-    owner = api("/api/v2/users/me")["username"]
-    return f"coder-{owner.lower()}-{ws.lower()}"
+    return f"fold-{ws.lower()}"
 
 
 def ensure_profile():
@@ -384,7 +360,7 @@ def opencode_config(url, key, model):
 
 def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
                     llm=None, model=None, repo=None):
-    """Provision a fold-native agent: golden image, no Coder involved."""
+    """Provision a fold-native agent from the golden image."""
     ensure_profile()
     url, key, model, ep_name = resolve_llm(llm, model)
     project, work_repo = resolve_repo(repo)
@@ -449,28 +425,12 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
           + (f", ctx {ctx}" if ctx else "") + ")")
 
 
-def get_tasks():
-    # list lives at ?owner=me; /tasks/me is the create/get-by-id prefix.
-    # Coder gone or token expired = native-only mode, never a crash.
-    try:
-        d = api("/api/experimental/tasks?owner=me")
-    except Exception as e:
-        print(f"[coder unavailable ({e}); native registry only]",
-              file=sys.stderr)
-        return []
-    return d if isinstance(d, list) else d.get("tasks", [])
-
-
 def cmd_tasks():
     nat = native_running()
     for name, meta in sorted(registry().items(),
                              key=lambda kv: -kv[1]["created"]):
         st = nat.get(name, "STOPPED")
         print(f"{name:24} ws={st.lower():10} native/{meta['flavor']}")
-    for t in get_tasks():
-        state = (t.get("current_state") or {}).get("state", "-")
-        print(f"{t['name']:24} ws={t['workspace_status']:10} "
-              f"agent={t.get('workspace_agent_lifecycle') or '-':12} task={state}")
 
 
 def host_available_gib():
@@ -515,20 +475,6 @@ def record_memstats(ws, template=""):
     return rec
 
 
-def frozen_workspaces():
-    r = incus("list", "--format", "csv", "-c", "ns", ok_fail=True)
-    out = set()
-    for line in (r.stdout or "").splitlines():
-        name, _, status = line.partition(",")
-        if status != "FROZEN":
-            continue
-        if name.startswith("fold-"):
-            out.add(name[5:])
-        elif name.count("-") >= 2:
-            out.add(name.split("-", 2)[2])
-    return out
-
-
 def native_running():
     r = incus("list", "--format", "csv", "-c", "ns", ok_fail=True)
     out = {}
@@ -541,53 +487,22 @@ def native_running():
 
 def cmd_dispatch(template, prompt, mem_gib=None, ctx=None,
                  llm=None, model=None, repo=None):
+    if template not in ("agent", "shepherd"):
+        sys.exit(f"unknown template {template!r}; "
+                 "native templates: agent, shepherd")
     # Admission control: inference slots (max working) + RAM headroom.
     # Frozen instances hold no slot: zero CPU, zero inference.
-    frozen = frozen_workspaces()
     nat = native_running()
-    working = sum(1 for t in get_tasks()
-                  if t["workspace_status"] == "running"
-                  and t["workspace_name"].lower() not in frozen)
-    working += sum(1 for st in nat.values() if st == "RUNNING")
-    if template in ("agent", "shepherd"):
-        need = mem_gib or learned_footprint_gib(template) or 2.0
-        avail = host_available_gib()
-        if working >= MAX_WORKING:
-            sys.exit(f"admission: {working} already working (max {MAX_WORKING})")
-        if avail - 2.0 < need:
-            sys.exit(f"admission: expects {need:.1f} GiB, host has "
-                     f"{avail:.1f} GiB (2 GiB reserve)")
-        return native_dispatch(template, prompt, mem_gib=mem_gib, ctx=ctx,
-                               llm=llm, model=model, repo=repo)
-    if working >= MAX_WORKING:
-        sys.exit(f"admission: {working} tasks already working "
-                 f"(max {MAX_WORKING}); queue it or raise FOLD_MAX_WORKING")
+    working = sum(1 for st in nat.values() if st == "RUNNING")
     need = mem_gib or learned_footprint_gib(template) or 2.0
     avail = host_available_gib()
-    if avail - 2.0 < need:  # keep 2 GiB host reserve
-        sys.exit(f"admission: task expects {need:.1f} GiB but host has "
-                 f"{avail:.1f} GiB available (2 GiB reserve); "
-                 "wait, stop something, or pass --mem to override")
-    org = api("/api/v2/organizations")[0]["id"]
-    tv = next(t["active_version_id"]
-              for t in api(f"/api/v2/organizations/{org}/templates")
-              if t["name"] == template)
-    name = f"task-{int(time.time()) % 100000}"
-    t = api("/api/experimental/tasks/me", "POST", {
-        "template_version_id": tv, "name": name,
-        "prompt": prompt, "input": prompt})
-    if ctx:
-        os.makedirs(STATE_DIR, exist_ok=True)
-        ctx_file = os.path.join(STATE_DIR, "ctx.json")
-        try:
-            m = json.load(open(ctx_file))
-        except (FileNotFoundError, json.JSONDecodeError):
-            m = {}
-        m[t["name"]] = ctx
-        json.dump(m, open(ctx_file, "w"), indent=1)
-    print(f"dispatched {t['name']} (workspace {t['workspace_name']}, "
-          f"expected ~{need:.1f} GiB, host had {avail:.1f} GiB free"
-          + (f", ctx {ctx}" if ctx else "") + ")")
+    if working >= MAX_WORKING:
+        sys.exit(f"admission: {working} already working (max {MAX_WORKING})")
+    if avail - 2.0 < need:
+        sys.exit(f"admission: expects {need:.1f} GiB, host has "
+                 f"{avail:.1f} GiB (2 GiB reserve)")
+    return native_dispatch(template, prompt, mem_gib=mem_gib, ctx=ctx,
+                           llm=llm, model=model, repo=repo)
 
 
 def _instance_ip(inst):
@@ -649,31 +564,16 @@ def cmd_resume(ws):
 
 
 def cmd_start(ws):
-    if ws in registry():
-        incus("start", f"fold-{ws.lower()}")
-        print(f"{ws}: started (native)")
-        return
-    w = api(f"/api/v2/users/me/workspace/{ws}")
-    api(f"/api/v2/workspaces/{w['id']}/builds", "POST",
-        {"transition": "start"})
-    print(f"{ws}: start requested")
+    incus("start", f"fold-{ws.lower()}")
+    print(f"{ws}: started")
 
 
 def cmd_stop(ws):
     # End-of-task lifecycle, not failure handling: home volume persists.
-    reg = registry()
-    if ws in reg:
-        rec = record_memstats(ws, reg[ws].get("flavor", "agent"))
-        incus("stop", f"fold-{ws.lower()}", ok_fail=True)
-        peak = f", anon peak {rec['anon_peak_gib']} GiB recorded" if rec else ""
-        print(f"{ws}: stopped (native){peak}")
-        return
-    w = api(f"/api/v2/users/me/workspace/{ws}")
-    template = w.get("template_name", "")
-    rec = record_memstats(ws, template)
-    api(f"/api/v2/workspaces/{w['id']}/builds", "POST", {"transition": "stop"})
+    rec = record_memstats(ws, registry().get(ws, {}).get("flavor", "agent"))
+    incus("stop", f"fold-{ws.lower()}", ok_fail=True)
     peak = f", anon peak {rec['anon_peak_gib']} GiB recorded" if rec else ""
-    print(f"{ws}: stop requested{peak}")
+    print(f"{ws}: stopped{peak}")
 
 
 def cmd_memstats():
@@ -684,33 +584,6 @@ def cmd_memstats():
     for r in rows[-20:]:
         print(f"{r['workspace']:24} {r['template']:14} "
               f"anon_peak={r['anon_peak_gib']:>5} GiB  peak={r['peak_gib']:>5} GiB")
-
-
-def cmd_watch(once=False):
-    """Pause-default failure policy: freeze + notify. Never delete."""
-    seen = set()
-    while True:
-        for t in get_tasks():
-            failing = (t["workspace_status"] == "failed"
-                       or t.get("workspace_agent_lifecycle") in
-                       ("start_error", "start_timeout"))
-            key = (t["name"], t["workspace_status"],
-                   t.get("workspace_agent_lifecycle"))
-            if failing and key not in seen:
-                seen.add(key)
-                name = t["workspace_name"]
-                inst = instance_name(name)
-                r = incus("pause", inst, ok_fail=True)
-                paused = "frozen for inspection" if r.returncode == 0 else \
-                         "not an incus workspace (or already stopped) — left as-is"
-                ntfy(f"fold: task {t['name']} failing",
-                     f"workspace={name} status={t['workspace_status']} "
-                     f"agent={t.get('workspace_agent_lifecycle')}; {paused}. "
-                     f"Nothing was deleted.")
-                print(f"[watch] {t['name']}: {paused}, notified")
-        if once:
-            return
-        time.sleep(60)
 
 
 def main():
@@ -753,8 +626,6 @@ def main():
     elif cmd in ("pause", "resume", "stop", "start") and len(rest) == 1:
         {"pause": cmd_pause, "resume": cmd_resume,
          "stop": cmd_stop, "start": cmd_start}[cmd](rest[0])
-    elif cmd == "watch":
-        cmd_watch(once="--once" in rest)
     else:
         sys.exit(__doc__)
 

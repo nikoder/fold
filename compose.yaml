@@ -15,8 +15,6 @@ services:
       # sessions on the incus bridge) needs the agent-plane bearer token
       # and gets dispatch + messaging only.
       FOLD_BOARD_BIND: ${FOLD_BOARD_BIND:-0.0.0.0}
-      FOLD_CODER_URL: ${FOLD_CODER_URL:-http://localhost:7081}
-      FOLD_CODER_TOKEN_FILE: /creds/.api-token-tasks
       FOLD_CREDS: /creds/bellwether.env
       FOLD_STATE_DIR: /state
       FOLD_MAX_WORKING: ${FOLD_MAX_WORKING:-6}

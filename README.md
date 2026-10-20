@@ -58,7 +58,7 @@ These are the point. The rest is plumbing.
 Three planes over one environment layer:
 
 - **Control plane** — `bin/foldctl` (the single audited mutation path:
-  dispatch with admission control, pause/resume/stop/start, watch) and
+  dispatch with admission control, pause/resume/stop/start) and
   `board/` (a dependency-free web UI: live kanban, dispatch modal with
   per-task model selection, raised hands, archive, fleet — humans enter
   via reverse-proxy auth, agents via a bearer-token plane limited to
@@ -86,13 +86,12 @@ board (output-rate spikes are the review-worthy "intensity" signal).
 | Path | What |
 | --- | --- |
 | `contract/AGENTS.template.md` | The working agreement placed in each repo agents work on — situation, workflow, raise-hand/hand-down, closing notes, experience reports, the `.fold/` verification contract |
-| `bin/foldctl` | Control plane CLI: dispatch (admission-controlled, learned memory footprints), lifecycle verbs, watch |
+| `bin/foldctl` | Control plane CLI: dispatch (admission-controlled, learned memory footprints), lifecycle verbs |
 | `board/` | Web UI + server; compose-deployable; all mutations shell out to foldctl |
 | `image/` + `scripts/build-image.sh` | Golden image: boot contract reads per-task config via the incus guest API |
 | `scripts/bellwether-review.sh` | The reviewer: sandboxed checks + fresh-context verdict, posted as a real Forgejo review |
 | `scripts/egress-report.sh` | Observed-egress summary that writes your future allowlist |
 | `scripts/token-backfill.py` | Harvest token stats from stopped tasks' volumes |
-| `templates/` | Legacy Coder task templates from the pre-native era (kept for reference until cutover) |
 
 ## Portability
 
