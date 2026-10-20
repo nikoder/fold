@@ -7,8 +7,6 @@ path BEFORE the module import (neutralizing the creds-repo guard) and
 cmd_dispatch is stubbed, so nothing here touches incus, the forge, or
 a real credentials file.
 """
-import importlib.machinery
-import importlib.util
 import io
 import os
 import sys
@@ -16,14 +14,13 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["FOLD_CREDS"] = os.path.join(ROOT, ".fold", "no-such-creds")
 
-# bin/foldctl has no .py extension, so it cannot be imported the
-# normal way; load it by path with an explicit source loader instead.
+# bin/foldctl has no .py extension and cannot be imported the normal
+# way; exec its source directly so the test reads exactly the bytes on
+# disk — no __pycache__ can shadow the code under test.
 _path = os.path.join(ROOT, "bin", "foldctl")
-_spec = importlib.util.spec_from_file_location(
-    "foldctl", _path,
-    loader=importlib.machinery.SourceFileLoader("foldctl", _path))
-foldctl = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(foldctl)
+foldctl = {"__name__": "foldctl", "__file__": _path}
+with open(_path) as f:
+    exec(compile(f.read(), _path, "exec"), foldctl)
 
 
 def parse(argv):
@@ -31,12 +28,12 @@ def parse(argv):
     the stubbed cmd_dispatch) on a clean parse, ("exit", code) when
     the parser rejects the argv."""
     seen = {}
-    foldctl.cmd_dispatch = (
+    foldctl["cmd_dispatch"] = (
         lambda template, prompt, **kw:
         seen.update(template=template, prompt=prompt, **kw))
     sys.argv = argv
     try:
-        foldctl.main()
+        foldctl["main"]()
     except SystemExit as e:
         return "exit", e.code
     return "dispatch", seen
