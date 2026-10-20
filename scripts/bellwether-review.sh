@@ -169,12 +169,23 @@ req = urllib.request.Request(
     llm_url,
     data=json.dumps({
         "model": llm_model,
-        "max_tokens": 10000,
-        # bellwether REASONS on its verdicts — suppressing thinking would
-        # change the reviewer's cognition, not fix a bug (the old server
-        # ignored enable_thinking:false, so every verdict so far was
-        # reasoned). Medium effort bounds the budget on fold-sized diffs.
-        "reasoning_effort": "medium",
+        # bellwether gets FULL capability: server-default reasoning effort
+        # (max on this engine — suppressing or trimming thinking would
+        # change the reviewer's cognition, not fix a bug) and a budget
+        # wide enough that a fold-sized diff cannot pinch it mid-thought.
+        "max_tokens": 32000,
+        # Schema-guaranteed verdict (server structured-output fix verified
+        # 2026-10-20, incl. 4-way concurrency): the grammar engages after
+        # reasoning closes, so thinking is untouched. The anchor-parse
+        # below stays as the belt to these braces.
+        "response_format": {"type": "json_schema", "json_schema": {
+            "name": "verdict",
+            "schema": {"type": "object", "properties": {
+                "verdict": {"type": "string",
+                            "enum": ["approve", "request_changes",
+                                     "escalate"]},
+                "body": {"type": "string"}},
+                "required": ["verdict", "body"]}}},
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": f"PR title: {title}\n\nCheck run:\n{checks}\n\nDiff:\n{diff}\n\nCurrent contents of changed files (post-change):\n{files}"},
@@ -183,7 +194,7 @@ req = urllib.request.Request(
     headers={"Content-Type": "application/json",
              "Authorization": f"Bearer {llm_key}"},
 )
-out = json.load(urllib.request.urlopen(req, timeout=300))
+out = json.load(urllib.request.urlopen(req, timeout=1200))
 msg = out["choices"][0]["message"]
 # Engines disagree on the thinking field's name (reasoning_content vs
 # reasoning); the anchor-parse below stays REGARDLESS of server-side
