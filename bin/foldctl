@@ -597,6 +597,19 @@ def cmd_memstats():
               f"anon_peak={r['anon_peak_gib']:>5} GiB  peak={r['peak_gib']:>5} GiB")
 
 
+# Dispatch's option flags, defined once: build_parser wires them into
+# the argparse subparser, _merge_dispatch_prompt's prescan accepts
+# exactly these before the prompt begins. Every flag takes a value —
+# the prescan skips flag+value pairs wholesale.
+DISPATCH_FLAGS = (
+    ("--mem", "memory cap override (GiB)", {"type": float}),
+    ("--ctx", "planning session for raised hands", {}),
+    ("--llm", "endpoint registry name", {}),
+    ("--model", "model name", {}),
+    ("--repo", "project registry name", {}),
+)
+
+
 def _merge_dispatch_prompt(argv, pdispatch):
     """Insert argparse's "--" separator where the prompt begins, so
     argparse sees only flags + template before it and treats the whole
@@ -609,7 +622,7 @@ def _merge_dispatch_prompt(argv, pdispatch):
     unknown flag ('agent --bogus hi' and 'agent hi --bogus' parse
     identically), and even nargs="?" re-parses a leading-dash prompt
     word as an option — so the boundary is marked explicitly."""
-    known = {"--mem", "--ctx", "--llm", "--model", "--repo"}
+    known = {flag for flag, _, _ in DISPATCH_FLAGS}
     rest, i, words = argv[1:], 0, 0
     while i < len(rest):
         a = rest[i]
@@ -663,12 +676,8 @@ def build_parser():
     pdis = sub.add_parser(
         "dispatch", help="create a task; --repo picks the project "
         "(registry name), --llm and --model the inference pair")
-    pdis.add_argument("--mem", type=float,
-                      help="memory cap override (GiB)")
-    pdis.add_argument("--ctx", help="planning session for raised hands")
-    pdis.add_argument("--llm", help="endpoint registry name")
-    pdis.add_argument("--model", help="model name")
-    pdis.add_argument("--repo", help="project registry name")
+    for flag, helptext, opts in DISPATCH_FLAGS:
+        pdis.add_argument(flag, help=helptext, **opts)
     pdis.add_argument("template", nargs="?")
     pdis.add_argument("prompt", nargs="*")
     pdis.set_defaults(func=run_dispatch, parser=pdis)
