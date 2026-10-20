@@ -366,7 +366,13 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     # host: commit metadata outlives the repo's walls (mirrors, bundles),
     # and a real internal hostname in every agent commit is a leak.
     email = conf("FOLD_AUTHOR_EMAIL", f"{login}@fold.invalid")
+    # fold assigns the branch and remembers it: the task<->PR association
+    # is registry-owned, never read back out of author-written prose (a
+    # PR body naming someone else's workspace must not be able to route
+    # a doorbell into their session).
+    branch = f"agent/{login}/{name}"
     env = {
+        "FOLD_BRANCH": branch,
         "FORGEJO_URL": forge,
         "FORGEJO_REPO": work_repo,
         "FORGEJO_TOKEN": author,
@@ -406,7 +412,8 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     reg[name] = {"flavor": flavor, "created": int(time.time()),
                  "prompt": prompt, "ctx": ctx,
                  "llm": ep_name, "model": model,
-                 "project": project, "repo": work_repo}
+                 "project": project, "repo": work_repo,
+                 "branch": branch}
     save_registry(reg)
     if ctx:
         ctx_file = os.path.join(STATE_DIR, "ctx.json")

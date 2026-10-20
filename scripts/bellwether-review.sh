@@ -55,6 +55,18 @@ LLM_KEY=${FOLD_REVIEW_KEY:-${REG_KEY:-proxy-injected}}
 PRJSON=$(curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR")
 TITLE=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["title"])' "$PRJSON")
 HEADREF=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["head"]["ref"])' "$PRJSON")
+# The author's workspace — the doorbell's return address — comes from
+# the fold's OWN registry (dispatch assigned the branch and recorded
+# it), never from author-written prose: a PR body naming someone else's
+# workspace must not be able to route messages into their session.
+AUTHOR_WS=$(python3 -c 'import json,sys
+try:
+    reg = json.load(open(sys.argv[1]))
+except Exception:
+    reg = {}
+print(next((k for k, v in reg.items()
+            if isinstance(v, dict) and v.get("branch") == sys.argv[2]), ""))' \
+  "$STATE/tasks.json" "$HEADREF")
 
 DIFFFILE=$(mktemp); CHECKFILE=$(mktemp); FILESFILE=$(mktemp)
 trap 'rm -f "$DIFFFILE" "$CHECKFILE" "$FILESFILE"' EXIT
@@ -241,6 +253,23 @@ req = urllib.request.Request(
 resp = json.load(urllib.request.urlopen(req, timeout=60))
 print(f"posted review id={resp['id']} state={resp['state']}")
 EOF
+# The doorbell: on REQUEST_CHANGES, tell the author's session that the
+# PR has feedback. The PR is the ledger — the message carries no review
+# content, only where to look, so machinery never injects reviewer text
+# into a session. Best-effort: a resting/stopped author just means the
+# review waits on the PR.
+if [ "$EVENT" = "REQUEST_CHANGES" ] && [ -n "$AUTHOR_WS" ]; then
+  BOARD_URL=$(fold_env FOLD_BOARD_URL)
+  BOARD_TOKEN=$(grep -oP 'FOLD_BOARD_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env} || true)
+  if [ -n "$BOARD_URL" ] && [ -n "$BOARD_TOKEN" ]; then
+    curl -s -m 20 -X POST "$BOARD_URL/api/task/$AUTHOR_WS/message" \
+      -H "Authorization: Bearer $BOARD_TOKEN" -H "Content-Type: application/json" \
+      -d "{\"content\":\"bellwether requested changes on your PR #$PR ($REPO). The PR is the conversation: fetch the reviews and comments via the API, address the points with commits on your branch, reply on the PR, re-run ./.fold/check, and comment when ready for re-review.\"}" \
+      >/dev/null 2>&1 \
+      && echo "doorbell: author session $AUTHOR_WS notified" \
+      || echo "doorbell: could not reach author session $AUTHOR_WS (resting/stopped is fine — the review waits on the PR)" >&2
+  fi
+fi
 # A completed run means any earlier harness hand is moot: lower it on
 # the same channel (no-op when none is open; the plain "bellwether"
 # escalation identity is untouched and stays with the human).

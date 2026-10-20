@@ -15,9 +15,11 @@ reports. Find your role:
 This checkout is the fold's control plane — the code that runs you and
 your flock-mates. That earns it the strictest merge policy in the fold:
 
-- Work on a branch `agent/<your-name>/<short-slug>`; push and open a PR
-  exactly as the template contract describes.
+- Work on the branch `$FOLD_BRANCH` from your environment; push and
+  open a PR exactly as the template contract describes.
 - Run `./.fold/check` before opening the PR.
+- Review feedback arrives as a session message pointing at the PR;
+  the PR is the conversation (see the template contract's workflow).
 - bellwether's review here is ADVISORY: iterate on its change requests
   as usual, but only the human's approval satisfies the gate, and only
   the human merges — merge means deploy for this repo. A long wait on
