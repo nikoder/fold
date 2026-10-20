@@ -315,6 +315,32 @@ def cmd_repos_add(args):
     except urllib.error.HTTPError as e:
         print(f"branch protection not added (HTTP {e.code} — "
               "may already exist)")
+    # Review-feedback webhook: the forge tells the board about human
+    # reviews; changes-requested ones ring the author's session. Skipped
+    # with a note when board URL or webhook secret is missing.
+    # Idempotent: an existing hook at the same URL is left alone.
+    board = conf("FOLD_BOARD_URL")
+    whsec = cred("FOLD_WEBHOOK_SECRET")
+    if board and whsec:
+        hook_url = f"{board}/api/forgejo-hook"
+        existing = forgejo_api(f"/repos/{path}/hooks", token=admin)
+        if any((h.get("config") or {}).get("url") == hook_url
+               for h in existing):
+            print("webhook: already present")
+        else:
+            # event name must be from the forge's fixed vocabulary —
+            # unknown names are SILENTLY dropped (events: []). The
+            # rejected-only filter lives in the board handler instead.
+            forgejo_api(f"/repos/{path}/hooks", "POST",
+                        {"type": "forgejo", "active": True,
+                         "events": ["pull_request_review"],
+                         "config": {"url": hook_url,
+                                    "content_type": "json",
+                                    "secret": whsec}}, admin)
+            print("webhook: pull_request_review -> board doorbell")
+    else:
+        print("webhook: skipped (needs FOLD_BOARD_URL in fold.env and "
+              "FOLD_WEBHOOK_SECRET in creds)")
     reg = repos()
     key = name or rname
     reg[key] = {"repo": path, "review": review}

@@ -20,8 +20,9 @@ Portability in the README for what is still assumed.
 1. **Credentials file** (0600). One env-style file holding: a Forgejo
    token for the author agent, one for the reviewer, an ntfy write-only
    token for topic `fold` (+ a read-only one for the board), the
-   board's agent-plane bearer token, the human-plane header secret, and
-   your inference keys. Default path `~/.config/fold/creds.env`; set
+   board's agent-plane bearer token, the human-plane header secret, a
+   webhook secret (`FOLD_WEBHOOK_SECRET`, for the review-feedback
+   doorbell `foldctl repos add` wires up), and your inference keys. Default path `~/.config/fold/creds.env`; set
    `FOLD_CREDS` to move it.
    **Never put this file inside a git repository.** If it sits inside
    a checkout of a repo agents work on, every agent clone would carry

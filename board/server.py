@@ -11,6 +11,8 @@ the human (any gate works — ours is a WebAuthn key-tap) and injects the
 X-Fold-Human secret header. Loopback and the agent bearer plane also
 work. Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT, FOLD_MAX_WORKING.
 """
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -99,6 +101,11 @@ AGENT_PLANE_RES = [
 
 def board_token():
     m = re.search(r"FOLD_BOARD_TOKEN=(.*)", open(CREDS).read())
+    return m.group(1).strip() if m else None
+
+
+def webhook_secret():
+    m = re.search(r"FOLD_WEBHOOK_SECRET=(.*)", open(CREDS).read())
     return m.group(1).strip() if m else None
 
 
@@ -565,7 +572,69 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, live)
             self._send(404, {"error": "not found"})
 
+    def _forgejo_hook(self):
+        """Human-review doorbell. The forge POSTs review events here;
+        the HMAC signature is the whole gate (this path never consults
+        the human/agent planes). Only changes-requested reviews by
+        someone other than bellwether ring an author's session — and the
+        routing is registry-owned, exactly like bellwether's doorbell:
+        head branch -> tasks.json, never anything payload-authored."""
+        n = int(self.headers.get("Content-Length", 0))
+        if n > 1_000_000:
+            return self._send(413, {"error": "payload too large"})
+        raw = self.rfile.read(n)
+        sec = webhook_secret()
+        sig = (self.headers.get("X-Forgejo-Signature")
+               or self.headers.get("X-Gitea-Signature") or "")
+        if not sec or not hmac.compare_digest(
+                hmac.new(sec.encode(), raw, hashlib.sha256).hexdigest(),
+                sig):
+            return self._send(401, {"error": "bad signature"})
+        try:
+            body = json.loads(raw)
+        except json.JSONDecodeError:
+            return self._send(400, {"error": "bad json"})
+        event = (self.headers.get("X-Forgejo-Event")
+                 or self.headers.get("X-Gitea-Event") or "")
+        rtype = (body.get("review") or {}).get("type") or event
+        sender = (body.get("sender") or {}).get("login") or "a reviewer"
+        if not event.startswith("pull_request"):
+            return self._send(200, {"ok": True, "ignored": event})
+        if sender == "bellwether":
+            # its review script rings its own doorbell
+            return self._send(200, {"ok": True, "ignored": "bellwether"})
+        if "reject" not in rtype and "reject" not in event:
+            return self._send(200, {"ok": True, "ignored": rtype})
+        pr = body.get("pull_request") or {}
+        head = (pr.get("head") or {}).get("ref") or ""
+        repo = (body.get("repository") or {}).get("full_name") or ""
+        try:
+            reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
+        except (FileNotFoundError, json.JSONDecodeError):
+            reg = {}
+        ws = next((k for k, v in reg.items()
+                   if isinstance(v, dict) and v.get("branch") == head), "")
+        if not ws:
+            return self._send(200, {"ok": True,
+                                    "ignored": "branch not in registry"})
+        r = agentapi(ws, "/message", {
+            "content": f"{sender} requested changes on your PR "
+                       f"#{pr.get('number')} ({repo}). The PR is the "
+                       "conversation: fetch the reviews and comments via "
+                       "the API, address the points with commits on your "
+                       "branch, reply on the PR, re-run ./.fold/check, "
+                       "and comment when ready for re-review.",
+            "type": "user"})
+        delivered = "error" not in r
+        print(f"[hook] review by {sender} on {repo}#{pr.get('number')} -> "
+              f"{ws}: {'delivered' if delivered else r.get('error')}",
+              flush=True)
+        return self._send(200, {"ok": True, "delivered": delivered,
+                                "workspace": ws})
+
     def do_POST(self):
+        if self.path == "/api/forgejo-hook":
+            return self._forgejo_hook()
         if not self._gate("POST"):
             return
         n = int(self.headers.get("Content-Length", 0))
