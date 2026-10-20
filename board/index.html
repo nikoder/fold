@@ -211,6 +211,10 @@ function tokChips(t) {
   if (!t.tok) return "";
   // input = context weight (grows as the task grinds); output = generation.
   let s = " " + chip("neutral", `in ${fmtTok(t.tok.input)} · out ${fmtTok(t.tok.output)}`);
+  // live context size (single-turn input), not the billing sum: peak
+  // answers "how big did this task's mind get"
+  if (t.tok.peak_ctx) s += " " + chip("neutral", `ctx ${fmtTok(t.tok.peak_ctx)}`);
+  if (t.tok.cache_read) s += " " + chip("neutral", `cached ${fmtTok(t.tok.cache_read)}`);
   // intensity: output rate, time-averaged between harvests. The endpoint
   // does ~6k tok/min flat out single-stream, so sustained thousands here
   // means "generating almost continuously" — the runaway signature.

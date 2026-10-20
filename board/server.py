@@ -388,17 +388,29 @@ def _harvest_tokens(ws, tokens):
         # cannot replay the WAL — a fresh session's data lives there
         # entirely until opencode checkpoints
         con = sq.connect(f"{tmp}.db")
-        tin = tout = msgs = 0
-        for (data,) in con.execute("SELECT data FROM message"):
+        tin = tout = msgs = peak = last = cread = cwrite = 0
+        for (data,) in con.execute("SELECT data FROM message ORDER BY rowid"):
             try:
                 d = json.loads(data)
             except json.JSONDecodeError:
                 continue
             tk = d.get("tokens") or {}
             if d.get("role") == "assistant" and tk:
-                tin += tk.get("input", 0)
+                # summed input is a BILLING figure (context re-sent per
+                # turn); the single-turn input is the live context size —
+                # peak answers "how big did this task's mind get", last
+                # answers "how big is it now". Cache fields flow when the
+                # provider reports them (vLLM prefix hits currently don't).
+                i = tk.get("input", 0)
+                tin += i
                 tout += tk.get("output", 0)
                 msgs += 1
+                if i:
+                    peak = max(peak, i)
+                    last = i
+                c = tk.get("cache") or {}
+                cread += c.get("read", 0)
+                cwrite += c.get("write", 0)
         con.close()
     except Exception:
         return
@@ -408,6 +420,8 @@ def _harvest_tokens(ws, tokens):
     if prev and now > prev["t"] and tout >= prev["output"]:
         rate = round((tout - prev["output"]) * 60 / (now - prev["t"]))
     tokens[ws] = {"input": tin, "output": tout, "msgs": msgs,
+                  "peak_ctx": peak, "last_ctx": last,
+                  "cache_read": cread, "cache_write": cwrite,
                   "t": now, "out_per_min": rate}
 
 
