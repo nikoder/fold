@@ -3,9 +3,9 @@
 
 Drives main() with hand-built argvs and asserts what the parser fed to
 cmd_dispatch. Hermetic on purpose: FOLD_CREDS points at a nonexistent
-path BEFORE the module import (neutralizing the creds-repo guard) and
-cmd_dispatch is stubbed, so nothing here touches incus, the forge, or
-a real credentials file.
+path BEFORE the foldctl source is loaded (neutralizing the creds-repo
+guard) and cmd_dispatch is stubbed, so nothing here touches incus, the
+forge, or a real credentials file.
 """
 import io
 import os
