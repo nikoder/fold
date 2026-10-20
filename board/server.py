@@ -401,13 +401,15 @@ def _harvest_tokens(ws, tokens):
                 # peak answers "how big did this task's mind get", last
                 # answers "how big is it now". Cache fields flow when the
                 # provider reports them (vLLM prefix hits currently don't).
-                i = tk.get("input", 0)
+                i, o = tk.get("input", 0), tk.get("output", 0)
                 tin += i
-                tout += tk.get("output", 0)
+                tout += o
                 msgs += 1
                 if i:
-                    peak = max(peak, i)
-                    last = i
+                    # the context at a turn's END includes what the turn
+                    # generated: input + output is the true water mark
+                    peak = max(peak, i + o)
+                    last = i + o
                 c = tk.get("cache") or {}
                 cread += c.get("read", 0)
                 cwrite += c.get("write", 0)
