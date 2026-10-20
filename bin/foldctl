@@ -29,6 +29,7 @@ process env overrides it. Keys:
 Plus plain env config:
   FOLD_CREDS       (~/.config/fold/creds.env)   # tokens, 0600
 """
+import argparse
 import json
 import os
 import re
@@ -269,73 +270,63 @@ def forgejo_api(path, method="GET", body=None, token=None):
         return json.loads(data) if data else {}
 
 
-def cmd_repos(rest):
-    if rest and rest[0] == "add":
-        rest = rest[1:]
-        path, create, review, name, default = None, False, "bellwether", None, False
-        while rest:
-            a, rest = rest[0], rest[1:]
-            if a == "--create":
-                create = True
-            elif a == "--default":
-                default = True
-            elif a == "--review":
-                review, rest = rest[0], rest[1:]
-            elif a == "--name":
-                name, rest = rest[0], rest[1:]
-            else:
-                path = a
-        if not path or "/" not in path:
-            sys.exit("usage: foldctl repos add <owner/name> [--create] "
-                     "[--name <project>] [--review bellwether|human] "
-                     "[--default]")
-        admin = cred("FOLD_SETUP_TOKEN")
-        if not admin:
-            sys.exit("FOLD_SETUP_TOKEN missing from creds file")
-        rname = path.rsplit("/", 1)[-1]
-        if create:
-            # /user/repos creates under the TOKEN's account regardless of
-            # the owner typed — creating elsewhere would register a path
-            # that doesn't match what was made. Ownership enforcement IS
-            # the token's privileges; this check just makes it legible.
-            me = forgejo_api("/user", token=admin).get("login", "")
-            owner = path.split("/", 1)[0]
-            if owner != me:
-                sys.exit(f"--create makes repos under the forge token's "
-                         f"account ({me}); cannot create {path}. Register "
-                         "an existing repo instead, or create it as "
-                         f"{me}/{rname}.")
-            forgejo_api("/user/repos", "POST",
-                        {"name": rname, "private": True, "auto_init": True,
-                         "default_branch": "master"}, admin)
-            print(f"created {path}")
-        login = conf("FOLD_AUTHOR_LOGIN", "fold-alpha")
-        for collab in (login, "bellwether"):
-            forgejo_api(f"/repos/{path}/collaborators/{collab}", "PUT",
-                        {"permission": "write"}, admin)
-        print(f"collaborators: {login}, bellwether (write)")
-        # Merge policy lives in the forge: approval required, no direct
-        # pushes. Idempotence: the forge rejects a duplicate rule.
-        try:
-            forgejo_api(f"/repos/{path}/branch_protections", "POST",
-                        {"branch_name": "master", "rule_name": "master",
-                         "required_approvals": 1,
-                         "block_on_rejected_reviews": True,
-                         "enable_push": False}, admin)
-            print("branch protection: master, 1 approval, no direct push")
-        except urllib.error.HTTPError as e:
-            print(f"branch protection not added (HTTP {e.code} — "
-                  "may already exist)")
-        reg = repos()
-        key = name or rname
-        reg[key] = {"repo": path, "review": review}
-        if default or "_default" not in reg:
-            reg["_default"] = key
-        os.makedirs(STATE_DIR, exist_ok=True)
-        json.dump(reg, open(REPOS_FILE, "w"), indent=1)
-        print(f"registered project {key} -> {path} (review={review}"
-              + (", default" if reg["_default"] == key else "") + ")")
-        return
+def cmd_repos_add(args):
+    path, create, review, name, default = (args.path, args.create,
+                                           args.review, args.name,
+                                           args.default)
+    if not path or "/" not in path:
+        sys.exit("usage: foldctl repos add <owner/name> [--create] "
+                 "[--name <project>] [--review bellwether|human] "
+                 "[--default]")
+    admin = cred("FOLD_SETUP_TOKEN")
+    if not admin:
+        sys.exit("FOLD_SETUP_TOKEN missing from creds file")
+    rname = path.rsplit("/", 1)[-1]
+    if create:
+        # /user/repos creates under the TOKEN's account regardless of
+        # the owner typed — creating elsewhere would register a path
+        # that doesn't match what was made. Ownership enforcement IS
+        # the token's privileges; this check just makes it legible.
+        me = forgejo_api("/user", token=admin).get("login", "")
+        owner = path.split("/", 1)[0]
+        if owner != me:
+            sys.exit(f"--create makes repos under the forge token's "
+                     f"account ({me}); cannot create {path}. Register "
+                     "an existing repo instead, or create it as "
+                     f"{me}/{rname}.")
+        forgejo_api("/user/repos", "POST",
+                    {"name": rname, "private": True, "auto_init": True,
+                     "default_branch": "master"}, admin)
+        print(f"created {path}")
+    login = conf("FOLD_AUTHOR_LOGIN", "fold-alpha")
+    for collab in (login, "bellwether"):
+        forgejo_api(f"/repos/{path}/collaborators/{collab}", "PUT",
+                    {"permission": "write"}, admin)
+    print(f"collaborators: {login}, bellwether (write)")
+    # Merge policy lives in the forge: approval required, no direct
+    # pushes. Idempotence: the forge rejects a duplicate rule.
+    try:
+        forgejo_api(f"/repos/{path}/branch_protections", "POST",
+                    {"branch_name": "master", "rule_name": "master",
+                     "required_approvals": 1,
+                     "block_on_rejected_reviews": True,
+                     "enable_push": False}, admin)
+        print("branch protection: master, 1 approval, no direct push")
+    except urllib.error.HTTPError as e:
+        print(f"branch protection not added (HTTP {e.code} — "
+              "may already exist)")
+    reg = repos()
+    key = name or rname
+    reg[key] = {"repo": path, "review": review}
+    if default or "_default" not in reg:
+        reg["_default"] = key
+    os.makedirs(STATE_DIR, exist_ok=True)
+    json.dump(reg, open(REPOS_FILE, "w"), indent=1)
+    print(f"registered project {key} -> {path} (review={review}"
+          + (", default" if reg["_default"] == key else "") + ")")
+
+
+def cmd_repos_list():
     reg = repos()
     if not any(not k.startswith("_") for k in reg):
         sys.exit(f"no projects registered; see foldctl repos add")
@@ -510,6 +501,14 @@ def cmd_dispatch(template, prompt, mem_gib=None, ctx=None,
                            llm=llm, model=model, repo=repo)
 
 
+def run_dispatch(args):
+    if args.template is None or not args.prompt:
+        args.parser.error("dispatch needs TEMPLATE and PROMPT")
+    cmd_dispatch(args.template, " ".join(args.prompt),
+                 mem_gib=args.mem, ctx=args.ctx, llm=args.llm,
+                 model=args.model, repo=args.repo)
+
+
 def _instance_ip(inst):
     r = incus("query", f"/1.0/instances/{inst}?recursion=1", ok_fail=True)
     if r.returncode:
@@ -591,48 +590,94 @@ def cmd_memstats():
               f"anon_peak={r['anon_peak_gib']:>5} GiB  peak={r['peak_gib']:>5} GiB")
 
 
+def _merge_dispatch_prompt(argv, pdispatch):
+    """Insert argparse's "--" separator where the prompt begins, so
+    argparse sees only flags + template before it and treats the whole
+    tail as positional prose. Flags may appear before the template word
+    or between it and the prompt; once the prompt begins every word is
+    prose, even words that look like flags (prompts quote dispatch
+    syntax, e.g. the shepherd contract examples). argparse can't express
+    that stop rule — a REMAINDER positional keeps eating known flags
+    after the template, parse_known_args can't tell prompt-prose from an
+    unknown flag ('agent --bogus hi' and 'agent hi --bogus' parse
+    identically), and even nargs="?" re-parses a leading-dash prompt
+    word as an option — so the boundary is marked explicitly."""
+    known = {"--mem", "--ctx", "--llm", "--model", "--repo"}
+    rest, i, words = argv[1:], 0, 0
+    while i < len(rest):
+        a = rest[i]
+        if a.startswith("--"):
+            if a == "--help" and not words:
+                return argv  # pre-template help belongs to argparse
+            if a not in known:
+                pdispatch.error(f"unknown dispatch flag {a!r} "
+                                f"(known: {sorted(known)})")
+            if i + 1 >= len(rest):
+                pdispatch.error(f"dispatch flag {a} needs a value")
+            i += 2
+        else:
+            words += 1
+            if words == 2:  # the prompt has begun
+                return argv[:1] + rest[:i] + ["--"] + rest[i:]
+            i += 1
+    return argv
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(
+        prog="foldctl", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="command")
+    p = sub.add_parser("tasks",
+                       help="list tasks with workspace + agent state")
+    p.set_defaults(func=lambda args: cmd_tasks())
+    p = sub.add_parser("memstats",
+                       help="anon/peak memory of recent stops")
+    p.set_defaults(func=lambda args: cmd_memstats())
+    for name, fn in (("pause", cmd_pause), ("resume", cmd_resume),
+                     ("stop", cmd_stop), ("start", cmd_start)):
+        p = sub.add_parser(name, help=f"{name} a workspace's incus instance")
+        p.add_argument("workspace")
+        p.set_defaults(func=lambda args, fn=fn: fn(args.workspace))
+    p = sub.add_parser("repos", help="list registered projects")
+    p.set_defaults(func=lambda args: cmd_repos_list())
+    padd = p.add_subparsers(dest="repos_cmd").add_parser(
+        "add", help="register a work repo (owner/name); --create makes "
+        "it on the forge")
+    padd.add_argument("path")
+    padd.add_argument("--create", action="store_true",
+                      help="create the repo on the forge")
+    padd.add_argument("--default", action="store_true",
+                      help="register it as the default project")
+    padd.add_argument("--review", default="bellwether",
+                      help="review policy: bellwether or human")
+    padd.add_argument("--name", help="registry project name")
+    padd.set_defaults(func=cmd_repos_add)
+    pdis = sub.add_parser(
+        "dispatch", help="create a task; --repo picks the project "
+        "(registry name), --llm and --model the inference pair")
+    pdis.add_argument("--mem", type=float,
+                      help="memory cap override (GiB)")
+    pdis.add_argument("--ctx", help="planning session for raised hands")
+    pdis.add_argument("--llm", help="endpoint registry name")
+    pdis.add_argument("--model", help="model name")
+    pdis.add_argument("--repo", help="project registry name")
+    pdis.add_argument("template", nargs="?")
+    pdis.add_argument("prompt", nargs="*")
+    pdis.set_defaults(func=run_dispatch, parser=pdis)
+    return parser, pdis
+
+
 def main():
-    args = sys.argv[1:]
-    if not args:
-        sys.exit(__doc__)
-    cmd, rest = args[0], args[1:]
-    if cmd == "tasks":
-        cmd_tasks()
-    elif cmd == "memstats":
-        cmd_memstats()
-    elif cmd == "repos":
-        cmd_repos(rest)
-    elif cmd == "dispatch" and len(rest) >= 2:
-        # Flags may appear before or after the template word; an unknown
-        # --flag is an error, never silently part of the prompt.
-        opts, pos = {}, []
-        known = {"--mem", "--ctx", "--llm", "--model", "--repo"}
-        while rest:
-            if len(pos) == 2:
-                # the prompt has begun: everything left is prose, even
-                # words that look like flags (prompts quote dispatch
-                # syntax, e.g. the shepherd contract examples)
-                pos[1] = pos[1] + " " + " ".join(rest)
-                rest = []
-            elif rest[0] in known and len(rest) >= 2:
-                opts[rest[0][2:]], rest = rest[1], rest[2:]
-            elif rest[0].startswith("--"):
-                sys.exit(f"unknown dispatch flag {rest[0]!r} "
-                         f"(known: {sorted(known)})")
-            else:
-                pos.append(rest[0])
-                rest = rest[1:]
-        if len(pos) < 2:
-            sys.exit("dispatch needs TEMPLATE and PROMPT")
-        cmd_dispatch(pos[0], pos[1],
-                     mem_gib=float(opts["mem"]) if "mem" in opts else None,
-                     ctx=opts.get("ctx"), llm=opts.get("llm"),
-                     model=opts.get("model"), repo=opts.get("repo"))
-    elif cmd in ("pause", "resume", "stop", "start") and len(rest) == 1:
-        {"pause": cmd_pause, "resume": cmd_resume,
-         "stop": cmd_stop, "start": cmd_start}[cmd](rest[0])
-    else:
-        sys.exit(__doc__)
+    parser, pdis = build_parser()
+    argv = sys.argv[1:]
+    if argv[:1] == ["dispatch"]:
+        argv = _merge_dispatch_prompt(argv, pdis)
+    args = parser.parse_args(argv)
+    if not args.command:
+        parser.print_help(file=sys.stderr)
+        sys.exit(1)
+    args.func(args)
 
 
 if __name__ == "__main__":
