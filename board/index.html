@@ -75,6 +75,8 @@
   .card { background:var(--surface); border:1px solid var(--line); border-radius:8px;
           padding:.6rem .7rem; display:flex; flex-direction:column; gap:.4rem; }
   .card.hand { border-color:var(--attn); box-shadow:0 0 0 1px var(--attn); }
+  .card.clickable { cursor:pointer; }
+  .card.clickable:hover { border-color:var(--accent); }
   .card.shepherd { border-left:4px solid var(--accent); background:
     linear-gradient(to right, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface) 40%); }
   .chip.shepherd { background:var(--done-bg); color:var(--done); border:1px solid var(--done); }
@@ -178,7 +180,8 @@
     </div>
   </dialog>
   <dialog id="taskdlg">
-    <h4 id="tdTitle">task</h4>
+    <h4 id="tdTitle" style="margin-bottom:.35rem;">task</h4>
+    <div class="m" id="tdChips" style="display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:.5rem;"></div>
     <div class="term" id="tdTerm">connecting…</div>
     <div class="msgrow">
       <input id="tdMsg" placeholder="Message the agent (lands in its session via agentapi)…">
@@ -237,6 +240,11 @@ async function act(verb, ws) {
     body: JSON.stringify({verb, workspace: ws})}).then(r=>r.json());
   toast(r.out || (r.ok ? "done" : "failed")); refresh();
 }
+function cardOpen(e, ws, name, st) {
+  // the whole card surface opens Visit — but never steal button clicks
+  if (e.target.closest("button")) return;
+  openTask(ws, name, st);
+}
 function taskCard(t, colName) {
   const acts = [`<button class="quiet" onclick="openTask('${t.workspace}','${t.name}','${t.frozen ? "frozen" : t.ws_status}')">Visit</button>`];
   if (t.frozen) acts.push(`<button class="quiet" onclick="act('resume','${t.workspace}')">Resume</button>`);
@@ -245,13 +253,20 @@ function taskCard(t, colName) {
   else if (["stopped"].includes(t.ws_status)) acts.push(`<button class="quiet" onclick="act('start','${t.workspace}')">Start</button>`);
   const hand = colName==="Needs you";
   const shep = (t.template||"").includes("shepherd");
-  return `<div class="card${hand?" hand":""}${shep?" shepherd":""}">
+  return `<div class="card clickable${hand?" hand":""}${shep?" shepherd":""}" onclick="cardOpen(event,'${t.workspace}','${t.name}','${t.frozen ? "frozen" : t.ws_status}')">
     <div class="t">${t.prompt || t.name}</div>
     <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.project ? " " + chip("neutral", "⌂ " + t.project) : ""}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
 
-let visiting = null, visitTimer = null;
+let visiting = null, visitTimer = null, lastState = null;
+function tdChips() {
+  // same live chips as the card, mirrored in the Visit header
+  const t = ((lastState || {}).tasks || []).find(x => x.workspace === visiting);
+  $("#tdChips").innerHTML = t
+    ? `${(t.template||"").includes("shepherd") ? chip("shepherd","shepherd")+" " : ""}${stChip(t)} ${t.project ? chip("neutral","⌂ "+t.project) : ""} ${t.model ? chip("neutral", t.model.length>18 ? t.model.slice(0,16)+"…" : t.model) : ""} ${t.ctx ? chip("neutral","ctx "+t.ctx) : ""}${tokChips(t)}`
+    : "";
+}
 const VIEWS = {board: "#board", archive: "#archive", fleet: "#fleetView"};
 function setView(v) {
   for (const [name, sel] of Object.entries(VIEWS)) $(sel).hidden = name !== v;
@@ -279,6 +294,7 @@ async function pollVisit() {
 function openTask(ws, name, st) {
   visiting = ws;
   $("#tdTitle").textContent = (name || ws) + (st && st!=="running" ? ` · ${st}` : "");
+  tdChips();
   $("#tdTerm").textContent = "connecting…";
   $("#taskdlg").showModal();
   pollVisit();
@@ -344,7 +360,9 @@ async function refresh() {
   const s = await fetch("/api/state").then(r=>r.json());
   endpoints = s.endpoints || {}; llmDefault = s.llm_default || {};
   repos = s.repos || {}; repoDefault = s.repo_default || null;
-  if (!$("#taskdlg").open) { fillLlmSelects(); fillRepoSelect(); }
+  lastState = s;
+  if ($("#taskdlg").open) tdChips();
+  else { fillLlmSelects(); fillRepoSelect(); }
   $("#stats").innerHTML =
     chip("working", `${s.host.working}/${s.host.max_working} working`) +
     chip("neutral", `host ${s.host.avail_gib} GiB free`) +
