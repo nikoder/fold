@@ -312,7 +312,13 @@ def state():
         rr = {}
     repo_summary = {k: v.get("repo") for k, v in rr.items()
                     if not k.startswith("_") and isinstance(v, dict)}
+    try:
+        bellwether = json.load(open(os.path.join(STATE_DIR,
+                                                 "bellwether.json")))
+    except (FileNotFoundError, json.JSONDecodeError):
+        bellwether = None
     return {"tasks": slim, "fleet": fleet, "hands": hands(),
+            "bellwether": bellwether,
             "repos": repo_summary, "repo_default": rr.get("_default"),
             "endpoints": ep_summary, "llm_default": eps.get("_default", {}),
             "host": {"avail_gib": avail, "max_working": MAX_WORKING,

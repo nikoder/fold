@@ -68,8 +68,48 @@ print(next((k for k, v in reg.items()
             if isinstance(v, dict) and v.get("branch") == sys.argv[2]), ""))' \
   "$STATE/tasks.json" "$HEADREF")
 
+# --- board presence: a run record the board renders as a live card,
+# plus a transcript in the same shape agentapi sessions produce, so the
+# Visit dialog's archived-transcript fallback replays the review run
+# with no new endpoints. Single writer (this script); last-wins is fine.
+BW_STATE="$STATE/bellwether.json"
+mkdir -p "$STATE/transcripts"
+bw() { python3 - "$BW_STATE" "$STATE/transcripts/bellwether-pr$PR.json" "$PR" "$REPO" "$1" "$2" <<'PY'
+import json, sys, time
+state_p, log_p, pr, repo, stage, note = sys.argv[1:7]
+try:
+    d = json.load(open(state_p))
+except Exception:
+    d = {"totals": {"input": 0, "output": 0, "reviews": 0}}
+now = int(time.time())
+if stage in ("done", "failed"):
+    act = d.get("active") or {}
+    d["last"] = {"pr": int(pr), "repo": repo, "outcome": note[:200],
+                 "t": now, "started": act.get("started")}
+    d["active"] = None
+    if stage == "done":
+        d.setdefault("totals", {})
+        d["totals"]["reviews"] = d["totals"].get("reviews", 0) + 1
+else:
+    act = d.get("active") or {}
+    if act.get("pr") != int(pr):
+        act = {"pr": int(pr), "repo": repo, "started": now}
+    act["stage"], act["t"] = stage, now
+    d["active"] = act
+json.dump(d, open(state_p, "w"), indent=1)
+if note:
+    try:
+        log = json.load(open(log_p))
+    except Exception:
+        log = {"messages": []}
+    log["messages"].append({"role": "agent", "content": f"[{stage}] {note}"})
+    json.dump(log, open(log_p, "w"))
+PY
+}
+
 DIFFFILE=$(mktemp); CHECKFILE=$(mktemp); FILESFILE=$(mktemp)
 trap 'rm -f "$DIFFFILE" "$CHECKFILE" "$FILESFILE"' EXIT
+bw checks "review of PR #$PR ($REPO) started: fetching diff, launching check container"
 curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR.diff" > "$DIFFFILE"
 
 # --- repo's fold config (declarative side of the .fold contract) ---
@@ -152,10 +192,12 @@ if [ -n "$HARNESS_FAIL" ]; then
       -d "PR #$PR ($REPO): review harness failure — $CHECK_STATUS. Review deferred; no verdict posted. Fix the harness and re-run." \
       "$NTFY" >/dev/null
   fi
+  bw failed "harness failure: $CHECK_STATUS — hand raised, review deferred"
   echo "harness failure: $CHECK_STATUS" >&2
   echo "hand raised; review deferred (no verdict posted)" >&2
   exit 3
 fi
+bw verdict "$CHECK_STATUS"
 
 # Prior review thread: on re-review rounds the verdict must be able to
 # verify that requested changes were addressed — continuity of EVIDENCE
@@ -182,7 +224,7 @@ PY
 )
 
 # --- verdict stage: fresh LLM context judges diff + check results ---
-REVIEW=$(python3 - "$TITLE" "$DIFFFILE" "$CHECK_STATUS" "$FILESFILE" "$LLM_URL" "$MODEL" "$LLM_KEY" "$THREAD" <<'EOF'
+REVIEW=$(python3 - "$TITLE" "$DIFFFILE" "$CHECK_STATUS" "$FILESFILE" "$LLM_URL" "$MODEL" "$LLM_KEY" "$THREAD" "$BW_STATE" <<'EOF'
 import json, sys, urllib.request
 
 title = sys.argv[1]
@@ -255,6 +297,16 @@ assert verdict["verdict"] in ("approve", "request_changes", "escalate")
 if len(verdict.get("body", "")) < 40:
     print(text, file=sys.stderr)
     raise SystemExit(f"degenerate review body: {verdict!r}")
+# account the verdict's own inference cost into the board record
+u = out.get("usage") or {}
+try:
+    bw = json.load(open(sys.argv[9]))
+except Exception:
+    bw = {"totals": {"input": 0, "output": 0, "reviews": 0}}
+bw.setdefault("totals", {})
+bw["totals"]["input"] = bw["totals"].get("input", 0) + u.get("prompt_tokens", 0)
+bw["totals"]["output"] = bw["totals"].get("output", 0) + u.get("completion_tokens", 0)
+json.dump(bw, open(sys.argv[9], "w"), indent=1)
 print(json.dumps(verdict))
 EOF
 )
@@ -305,4 +357,6 @@ if [ -n "$NTFY" ]; then
     -H "Priority: min" \
     -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
 fi
+bw done "verdict $EVENT:
+$BODY"
 echo "verdict: $EVENT"

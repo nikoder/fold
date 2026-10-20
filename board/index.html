@@ -77,6 +77,8 @@
   .card.hand { border-color:var(--attn); box-shadow:0 0 0 1px var(--attn); }
   .card.clickable { cursor:pointer; }
   .card.clickable:hover { border-color:var(--accent); }
+  .card.bellwether { border-left:4px solid var(--attn); background:
+    linear-gradient(to right, color-mix(in srgb, var(--attn) 7%, var(--surface)), var(--surface) 40%); }
   .card.shepherd { border-left:4px solid var(--accent); background:
     linear-gradient(to right, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface) 40%); }
   .chip.shepherd { background:var(--done-bg); color:var(--done); border:1px solid var(--done); }
@@ -240,6 +242,15 @@ async function act(verb, ws) {
     body: JSON.stringify({verb, workspace: ws})}).then(r=>r.json());
   toast(r.out || (r.ok ? "done" : "failed")); refresh();
 }
+function bellwetherCard(b) {
+  const a = b.active;
+  const mins = Math.max(0, Math.round((Date.now()/1000 - (a.started || 0)) / 60));
+  const open = `openTask('bellwether-pr${a.pr}','bellwether · PR #${a.pr}','review')`;
+  return `<div class="card clickable bellwether" onclick="if(!event.target.closest('button'))${open}">
+    <div class="t">bellwether — reviewing PR #${a.pr}</div>
+    <div class="m">${chip("attn", a.stage)} ${chip("neutral", a.repo)} ${chip("neutral", mins + "m")}</div>
+    <div class="a"><button class="quiet" onclick="${open}">Visit</button></div></div>`;
+}
 function cardOpen(e, ws, name, st) {
   // the whole card surface opens Visit — but never steal button clicks
   if (e.target.closest("button")) return;
@@ -293,6 +304,12 @@ async function pollVisit() {
 }
 function openTask(ws, name, st) {
   visiting = ws;
+  // bellwether runs are script executions, not sessions: the transcript
+  // replays, but there is nothing to message, pause, or stop
+  const isBW = ws.startsWith("bellwether-");
+  $(".msgrow").hidden = isBW;
+  $("#tdPause").hidden = isBW;
+  $("#tdStop").hidden = isBW;
   $("#tdTitle").textContent = (name || ws) + (st && st!=="running" ? ` · ${st}` : "");
   tdChips();
   $("#tdTerm").textContent = "connecting…";
@@ -375,6 +392,8 @@ async function refresh() {
     chip("working", `${s.host.working}/${s.host.max_working} working`) +
     chip("neutral", `host ${s.host.avail_gib} GiB free`) +
     (s.hands.length ? chip("attn", `✋ ${s.hands.length}`) : "") +
+    (s.bellwether && s.bellwether.totals && s.bellwether.totals.reviews
+      ? chip("neutral", `🔔 ${s.bellwether.totals.reviews} reviews · ${fmtTok(s.bellwether.totals.input)}/${fmtTok(s.bellwether.totals.output)}`) : "") +
     (s.fleet.some(f=>f.status==="Frozen") ? chip("frozen","frozen present") : "");
   // preserve column scroll across re-renders: a jumped list under a
   // poised cursor once restarted a container by accident
@@ -389,6 +408,8 @@ async function refresh() {
     }
     let cards = items.map(t => taskCard(t, name)).join("");
     if (name === "Needs you") cards = s.hands.map(handCard).join("") + cards;
+    if (name === "Working" && s.bellwether && s.bellwether.active)
+      cards = bellwetherCard(s.bellwether) + cards;
     cards = (cards || `<div class="card" style="color:var(--soft)">—</div>`) + extra;
     return `<div class="col${name==="Needs you"?" attn":""}"><h3>${name}${name==="Stopped"?` <span>${s.tasks.filter(pred).length}</span>`:""}</h3>
             <div class="cards">${cards}</div></div>`;
