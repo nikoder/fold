@@ -306,6 +306,14 @@ function closeTask() {
   $("#taskdlg").close();
 }
 $("#tdClose").onclick = closeTask;
+// Backdrop click dismisses the Visit view — it holds no unsaved state
+// (reopening reconnects). The dispatch/projects dialogs keep their
+// explicit buttons: a stray click must not eat a half-written prompt.
+$("#taskdlg").addEventListener("click", (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right ||
+      e.clientY < r.top || e.clientY > r.bottom) closeTask();
+});
 $("#taskdlg").addEventListener("close", () => { visiting=null; clearInterval(visitTimer); });
 $("#tdPause").onclick = () => { act("pause", visiting); };
 $("#tdStop").onclick = () => { const w=visiting; closeTask(); act("stop", w); };
