@@ -45,7 +45,15 @@ Portability in the README for what is still assumed.
 4. **Egress ACL** (observe first, restrict later):
    `incus network acl create fold-egress`, one egress `allow`+logged
    rule, one ingress `allow`. `scripts/egress-report.sh` turns the logs
-   into your eventual allowlist.
+   into your eventual allowlist. **Phase two**, once the report shows
+   only expected flows: replace the catch-all with explicit allows —
+   typically tcp/443 to your reverse proxy (it fronts forge, inference,
+   and ntfy alike), tcp/7070 + udp+tcp/53 to the incus bridge IP — and
+   set `security.acls.default.egress.action=reject` plus
+   `...default.egress.logged=true` on the profile's eth0, so the wall
+   keeps reporting what it stops. Gotcha: in-place ACL rule edits can
+   fail with an nft "no such chain" error (chain naming drift); create
+   a fresh ACL with the new rules and point the profile at it instead.
 5. **Golden image**: pin a base locally
    (`incus image copy images:debian/13/cloud local: --alias
    fold-builder-base` — never launch from `images:` at runtime, the
