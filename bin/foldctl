@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""foldctl — fold control plane v0 (CLI seed of the board). 🐑
+"""foldctl — fold control plane v0 (CLI seed of the board).
 
 Commands:
   tasks                       list tasks with workspace + agent state
