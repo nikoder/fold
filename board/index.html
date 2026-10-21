@@ -231,15 +231,34 @@ function stChip(t) {
   if (t.ws_status==="running") return chip("done","idle");
   return chip("neutral", t.ws_status);
 }
+async function api(path, opts) {
+  // fetch that refuses to fail silently: an expired front-door session
+  // turns POSTs into auth redirects that die quietly (CORS/non-JSON) —
+  // the one failure a user must be TOLD about, not left with a stale
+  // "dispatching…" toast
+  let r;
+  try {
+    r = await fetch(path, opts);
+  } catch (e) {
+    toast("request failed — login likely expired; reload the page");
+    throw e;
+  }
+  const ct = r.headers.get("content-type") || "";
+  if (!ct.includes("json")) {
+    toast("unexpected reply — login likely expired; reload the page");
+    throw new Error("non-json response");
+  }
+  return r.json();
+}
 function toast(msg) {
   const el = $("#toast"); el.textContent = msg; el.classList.add("show");
   setTimeout(() => el.classList.remove("show"), 3500);
 }
 async function act(verb, ws) {
   toast(`${verb} ${ws}…`);
-  const r = await fetch("/api/action", {method:"POST",
+  const r = await api("/api/action", {method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({verb, workspace: ws})}).then(r=>r.json());
+    body: JSON.stringify({verb, workspace: ws})});
   toast(r.out || (r.ok ? "done" : "failed")); refresh();
 }
 function bellwetherCard(b) {
@@ -338,14 +357,14 @@ $("#tdSend").onclick = async () => {
   const msg = $("#tdMsg").value.trim();
   if (!msg || !visiting) return;
   $("#tdMsg").value = "";
-  const r = await fetch(`/api/task/${visiting}/message`, {method:"POST",
+  const r = await api(`/api/task/${visiting}/message`, {method:"POST",
     headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({content: msg})}).then(r=>r.json());
+    body: JSON.stringify({content: msg})});
   if (r.error) toast(r.error); else pollVisit();
 };
 $("#tdMsg").addEventListener("keydown", (e) => { if (e.key==="Enter") $("#tdSend").click(); });
 async function resolveHand(id) {
-  await fetch("/api/resolve", {method:"POST",
+  await api("/api/resolve", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id})});
   refresh();
 }
@@ -460,9 +479,8 @@ $("#projAdd").onclick = async () => {
                 default: $("#projDefault").checked || undefined};
   if (!/^[\w.-]+\/[\w.-]+$/.test(body.path)) return toast("owner/name required");
   toast("registering…");
-  const r = await fetch("/api/repos/add", {method:"POST",
-    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)})
-    .then(r=>r.json());
+  const r = await api("/api/repos/add", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
   toast(r.out || (r.ok ? "registered" : "failed"));
   await refresh(); renderProjects();
 };
@@ -475,9 +493,8 @@ $("#go").onclick = async () => {
                 model: $("#modelSel").value || undefined};
   if (!body.prompt) return toast("write the task first");
   $("#dlg").close(); toast("dispatching…");
-  const r = await fetch("/api/dispatch", {method:"POST",
-    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)})
-    .then(r=>r.json());
+  const r = await api("/api/dispatch", {method:"POST",
+    headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
   toast(r.out || (r.ok ? "dispatched" : "failed")); refresh();
 };
 refresh();

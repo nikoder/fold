@@ -697,8 +697,11 @@ class H(BaseHTTPRequestHandler):
                 m.group(1), "/message", {"content": content, "type": "user"}))
         self._send(404, {"error": "not found"})
 
-    def log_message(self, *a):
-        pass
+    def log_message(self, fmt, *a):
+        # mutations deserve a trace (debugging a silent dispatch once
+        # meant flying blind); the GET/SSE firehose stays quiet
+        if not (a and isinstance(a[0], str) and a[0].startswith("GET")):
+            print(f"[{self.client_address[0]}] {fmt % a}", flush=True)
 
 
 if __name__ == "__main__":
