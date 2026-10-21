@@ -15,6 +15,8 @@ Commands:
                               inspectable, instantly resumable)
   resume WORKSPACE            unfreeze
   stop WORKSPACE              graceful stop (end-of-task lifecycle)
+  start WORKSPACE             start a stopped workspace's incus instance
+  memstats                    anon/peak memory of recent stops
 
 Deployment specifics (your Forgejo, your ntfy, repo paths, board URL)
 live OUTSIDE this repo in STATE_DIR/fold.env — plain KEY=VALUE lines;
