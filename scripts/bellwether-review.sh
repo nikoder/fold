@@ -349,13 +349,31 @@ if [ "$EVENT" = "REQUEST_CHANGES" ] && [ -n "$AUTHOR_WS" ]; then
   fi
 fi
 # A completed run means any earlier harness hand is moot: lower it on
-# the same channel (no-op when none is open; the plain "bellwether"
-# escalation identity is untouched and stays with the human).
+# the same channel. The board (durable hand state) is asked first so a
+# clean review sends nothing at all — but if the board can't answer,
+# the hand-down goes out anyway: correctness over quiet. The plain
+# "bellwether" escalation identity is untouched and stays with the human.
 if [ -n "$NTFY" ]; then
-  curl -s -H "Authorization: Bearer $(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})" \
-    -H "Title: hand-down: bellwether-harness" \
-    -H "Priority: min" \
-    -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
+  NEED_DOWN=1
+  BW_BOARD=$(fold_env FOLD_BOARD_URL)
+  BW_BTOK=$(grep -oP 'FOLD_BOARD_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env} || true)
+  if [ -n "$BW_BOARD" ] && [ -n "$BW_BTOK" ]; then
+    OPEN=$(curl -s -m 10 -H "Authorization: Bearer $BW_BTOK" "$BW_BOARD/api/state" \
+      | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+    print(sum(1 for h in d.get("hands", [])
+              if "bellwether-harness" in h.get("title", "")))
+except Exception:
+    print("?")' 2>/dev/null || echo "?")
+    [ "$OPEN" = "0" ] && NEED_DOWN=""
+  fi
+  if [ -n "$NEED_DOWN" ]; then
+    curl -s -H "Authorization: Bearer $(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})" \
+      -H "Title: hand-down: bellwether-harness" \
+      -H "Priority: min" \
+      -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
+  fi
 fi
 bw done "verdict $EVENT:
 $BODY"
