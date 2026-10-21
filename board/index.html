@@ -401,7 +401,16 @@ function fillLlmSelects() {
 document.addEventListener("change", (e) => { if (e.target.id === "llmSel") { $("#modelSel").value=""; fillLlmSelects(); } });
 
 async function refresh() {
-  const s = await fetch("/api/state").then(r=>r.json());
+  let s;
+  try {
+    const r = await fetch("/api/state");
+    if (!(r.headers.get("content-type") || "").includes("json")) throw 0;
+    s = await r.json();
+  } catch (e) {
+    // a dead session must look dead, not merely stale
+    $("#stats").innerHTML = chip("failed", "disconnected — reload the page (login likely expired)");
+    return;
+  }
   endpoints = s.endpoints || {}; llmDefault = s.llm_default || {};
   repos = s.repos || {}; repoDefault = s.repo_default || null;
   lastState = s;
