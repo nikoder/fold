@@ -231,6 +231,27 @@ function stChip(t) {
   if (t.ws_status==="running") return chip("done","idle");
   return chip("neutral", t.ws_status);
 }
+// Form drafts persist across reloads, deploys, and auth expiry: a
+// carefully written prompt must never die with its tab's session.
+const FORM_KEY = "fold.form.v1";
+let savedForm = {};
+try { savedForm = JSON.parse(localStorage.getItem(FORM_KEY)) || {}; } catch (e) {}
+function saveForm() {
+  // dynamic selects may be unpopulated yet: never clobber a saved
+  // choice with the empty string
+  localStorage.setItem(FORM_KEY, JSON.stringify({
+    prompt: $("#prompt").value, tpl: $("#tpl").value,
+    repo: $("#repoSel").value || savedForm.repo,
+    llm: $("#llmSel").value || savedForm.llm,
+    model: $("#modelSel").value || savedForm.model,
+    projPath: $("#projPath").value, projName: $("#projName").value,
+  }));
+  try { savedForm = JSON.parse(localStorage.getItem(FORM_KEY)) || {}; } catch (e) {}
+}
+function clearDraft(fields) {
+  for (const f of fields) delete savedForm[f];
+  localStorage.setItem(FORM_KEY, JSON.stringify(savedForm));
+}
 async function api(path, opts) {
   // fetch that refuses to fail silently: an expired front-door session
   // turns POSTs into auth redirects that die quietly (CORS/non-JSON) —
@@ -240,12 +261,12 @@ async function api(path, opts) {
   try {
     r = await fetch(path, opts);
   } catch (e) {
-    toast("request failed — login likely expired; reload the page");
+    toast("request failed — login likely expired; reload the page (your drafts are saved)");
     throw e;
   }
   const ct = r.headers.get("content-type") || "";
   if (!ct.includes("json")) {
-    toast("unexpected reply — login likely expired; reload the page");
+    toast("unexpected reply — login likely expired; reload the page (your drafts are saved)");
     throw new Error("non-json response");
   }
   return r.json();
@@ -381,7 +402,7 @@ function fillRepoSelect() {
   const sel = $("#repoSel"); const names = Object.keys(repos);
   sel.hidden = !names.length;
   if (!names.length) return;
-  const keep = sel.value;
+  const keep = sel.value || savedForm.repo;
   sel.innerHTML = names.map(n =>
     `<option value="${n}"${n===(keep||repoDefault)?" selected":""}>${n}${n===repoDefault?" (default)":""} — ${repos[n]}</option>`).join("");
 }
@@ -390,11 +411,11 @@ function fillLlmSelects() {
   const lsel = $("#llmSel"), msel = $("#modelSel");
   const names = Object.keys(endpoints);
   if (!names.length) return;
-  const keep = lsel.value;
+  const keep = lsel.value || savedForm.llm;
   lsel.innerHTML = names.map(n =>
     `<option value="${n}"${n===(keep||llmDefault.endpoint)?" selected":""}>${n}${n===llmDefault.endpoint?" (default)":""}</option>`).join("");
   const cur = lsel.value;
-  const keepM = msel.value;
+  const keepM = msel.value || savedForm.model;
   msel.innerHTML = (endpoints[cur]||[]).map(m =>
     `<option value="${m}"${m===(keepM||llmDefault.model)?" selected":""}>${m}</option>`).join("");
 }
@@ -490,6 +511,10 @@ $("#projAdd").onclick = async () => {
   toast("registering…");
   const r = await api("/api/repos/add", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  if (r.ok) {
+    $("#projPath").value = ""; $("#projName").value = "";
+    clearDraft(["projPath", "projName"]);
+  }
   toast(r.out || (r.ok ? "registered" : "failed"));
   await refresh(); renderProjects();
 };
@@ -504,8 +529,19 @@ $("#go").onclick = async () => {
   $("#dlg").close(); toast("dispatching…");
   const r = await api("/api/dispatch", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  if (r.ok) { $("#prompt").value = ""; clearDraft(["prompt"]); }
   toast(r.out || (r.ok ? "dispatched" : "failed")); refresh();
 };
+// restore drafts, then keep saving them as they are typed
+if (savedForm.prompt) $("#prompt").value = savedForm.prompt;
+if (savedForm.tpl) $("#tpl").value = savedForm.tpl;
+if (savedForm.projPath) $("#projPath").value = savedForm.projPath;
+if (savedForm.projName) $("#projName").value = savedForm.projName;
+for (const id of ["prompt", "tpl", "repoSel", "llmSel", "modelSel",
+                  "projPath", "projName"]) {
+  $("#" + id).addEventListener("input", saveForm);
+  $("#" + id).addEventListener("change", saveForm);
+}
 refresh();
 // SSE keeps the board fresh; the interval is only a reconnect fallback.
 try {
