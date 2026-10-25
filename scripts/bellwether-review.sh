@@ -74,9 +74,9 @@ print(next((k for k, v in reg.items()
 # with no new endpoints. Single writer (this script); last-wins is fine.
 BW_STATE="$STATE/bellwether.json"
 mkdir -p "$STATE/transcripts"
-bw() { python3 - "$BW_STATE" "$STATE/transcripts/bellwether-pr$PR.json" "$PR" "$REPO" "$1" "$2" <<'PY'
-import json, sys, time
-state_p, log_p, pr, repo, stage, note = sys.argv[1:7]
+bw() { python3 - "$BW_STATE" "$STATE/transcripts/bellwether-pr$PR.json" "$PR" "$REPO" "$1" "$2" "$AUTHOR_WS" <<'PY'
+import json, os, sys, time
+state_p, log_p, pr, repo, stage, note, ws = sys.argv[1:8]
 try:
     d = json.load(open(state_p))
 except Exception:
@@ -90,6 +90,21 @@ if stage in ("done", "failed"):
     if stage == "done":
         d.setdefault("totals", {})
         d["totals"]["reviews"] = d["totals"].get("reviews", 0) + 1
+    # Per-task review index: the board pins "this task was reviewed,
+    # here is the run" on the task's own card — the topbar chip only
+    # ever reaches the latest run, which is the wrong one the moment
+    # two reviews land close together.
+    try:
+        rp = os.path.join(os.path.dirname(state_p), "reviews.json")
+        try:
+            rv = json.load(open(rp))
+        except Exception:
+            rv = {}
+        rv[f"{repo}#{pr}"] = {"pr": int(pr), "repo": repo, "ws": ws,
+                              "t": now, "ok": stage == "done"}
+        json.dump(rv, open(rp, "w"), indent=1)
+    except Exception:
+        pass
 else:
     act = d.get("active") or {}
     if act.get("pr") != int(pr):
@@ -362,6 +377,34 @@ if [ "$EVENT" = "REQUEST_CHANGES" ] && [ -n "$AUTHOR_WS" ]; then
       || echo "doorbell: could not reach author session $AUTHOR_WS (resting/stopped is fine — the review waits on the PR)" >&2
   fi
 fi
+# Policy-gated auto-merge (human-approved capability, 2026-10-26): a
+# repo registered review=bellwether chose a machine gate, so an approval
+# IS the gate opening and the run finishes the job. Only the fold's own
+# registry can say so — never the PR, the diff, or the repo's contents —
+# and anything else (review=human, an unregistered repo, a FOLD_REPO
+# override) leaves the merge to a human.
+MERGED=""
+if [ "$EVENT" = "APPROVED" ]; then
+  POLICY=$(python3 -c 'import json,sys
+try:
+    reg = json.load(open(sys.argv[1]))
+except Exception:
+    reg = {}
+print(next((v.get("review", "") for v in reg.values()
+            if isinstance(v, dict) and v.get("repo") == sys.argv[2]), ""))' \
+    "$STATE/repos.json" "$REPO")
+  if [ "$POLICY" = "bellwether" ]; then
+    MCODE=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST \
+      -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
+      "$FORGEJO/api/v1/repos/$REPO/pulls/$PR/merge" -d '{"Do":"merge"}')
+    if [ "$MCODE" = "200" ]; then
+      MERGED=1
+      echo "merged PR #$PR (registry policy: bellwether-gated)"
+    else
+      echo "auto-merge failed (HTTP $MCODE) — PR stays open for a human" >&2
+    fi
+  fi
+fi
 # A completed run means any earlier harness hand is moot: lower it on
 # the same channel. The board (durable hand state) is asked first so a
 # clean review sends nothing at all — but if the board can't answer,
@@ -389,6 +432,6 @@ except Exception:
       -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
   fi
 fi
-bw done "verdict $EVENT:
+bw done "verdict $EVENT${MERGED:+ — merged (registry policy: bellwether-gated)}:
 $BODY"
-echo "verdict: $EVENT"
+echo "verdict: $EVENT${MERGED:+ (merged)}"

@@ -316,6 +316,16 @@ function bellwetherCard(b) {
     <div class="m">${chip("attn", a.stage)} ${chip("neutral", a.repo)} ${chip("neutral", mins + "m")}</div>
     <div class="a"><button class="quiet" onclick="${open}">Visit</button></div></div>`;
 }
+function reviewChip(ws) {
+  // the task's own door to its review run — the topbar chip only ever
+  // reaches the latest run, wrong as soon as two reviews land together
+  let best = null;
+  for (const r of Object.values((lastState || {}).reviews || {}))
+    if (r.ws === ws && (!best || r.t > best.t)) best = r;
+  return best
+    ? ` <span class="chip ${best.ok ? "neutral" : "attn"} clickable" title="open this task's review run (PR #${best.pr})" onclick="event.stopPropagation();openTask('bellwether-pr${best.pr}','bellwether · PR #${best.pr}','review')">🔔 PR #${best.pr}</span>`
+    : "";
+}
 function cardOpen(e, ws, name, st) {
   // the whole card surface opens Visit — but never steal button clicks
   if (e.target.closest("button")) return;
@@ -331,7 +341,7 @@ function taskCard(t, colName) {
   const shep = (t.template||"").includes("shepherd");
   return `<div class="card clickable${hand?" hand":""}${shep?" shepherd":""}" onclick="cardOpen(event,'${t.workspace}','${t.name}','${t.frozen ? "frozen" : t.ws_status}')">
     <div class="t">${t.prompt || t.name}</div>
-    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.project ? " " + chip("neutral", "⌂ " + t.project) : ""}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}</div>
+    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.project ? " " + chip("neutral", "⌂ " + t.project) : ""}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}${reviewChip(t.workspace)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
 
@@ -767,10 +777,21 @@ async function refresh() {
     }).join("");
 }
 function renderProjects() {
-  $("#projList").innerHTML = `<tr style="text-align:left; color:var(--soft);"><th>project</th><th>repo</th></tr>` +
+  const rv = (lastState || {}).repo_reviews || {};
+  $("#projList").innerHTML = `<tr style="text-align:left; color:var(--soft);"><th>project</th><th>repo</th><th>review</th></tr>` +
     (Object.keys(repos).length ? Object.entries(repos).map(([k, v]) =>
-      `<tr><td>${k}${k===repoDefault ? " ★" : ""}</td><td class="mono">${v}</td></tr>`).join("")
-     : `<tr><td colspan="2" style="color:var(--soft);">none registered yet</td></tr>`);
+      `<tr><td>${k}${k===repoDefault ? " ★" : ""}</td><td class="mono">${v}</td>
+       <td><button class="quiet" title="bellwether: approval auto-merges · human: merging stays yours — click to switch" onclick="setReview('${k}','${(rv[k]||"bellwether")==="human" ? "bellwether" : "human"}')">${rv[k]||"bellwether"}</button></td></tr>`).join("")
+     : `<tr><td colspan="3" style="color:var(--soft);">none registered yet</td></tr>`);
+}
+async function setReview(name, mode) {
+  const r = await api("/api/repos/review", {method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({name, review: mode})});
+  if (r.error) { toast(r.error); return; }
+  toast(`${name}: review=${mode}`);
+  await refresh();
+  renderProjects();
 }
 $("#projBtn").onclick = () => { renderProjects(); $("#projdlg").showModal(); };
 $("#projClose").onclick = () => $("#projdlg").close();

@@ -338,14 +338,21 @@ def state():
         rr = {}
     repo_summary = {k: v.get("repo") for k, v in rr.items()
                     if not k.startswith("_") and isinstance(v, dict)}
+    repo_reviews = {k: v.get("review", "bellwether") for k, v in rr.items()
+                    if not k.startswith("_") and isinstance(v, dict)}
     try:
         bellwether = json.load(open(os.path.join(STATE_DIR,
                                                  "bellwether.json")))
     except (FileNotFoundError, json.JSONDecodeError):
         bellwether = None
+    try:
+        reviews = json.load(open(os.path.join(STATE_DIR, "reviews.json")))
+    except (FileNotFoundError, json.JSONDecodeError):
+        reviews = {}
     return {"tasks": slim, "fleet": fleet, "hands": hands(),
-            "bellwether": bellwether,
-            "repos": repo_summary, "repo_default": rr.get("_default"),
+            "bellwether": bellwether, "reviews": reviews,
+            "repos": repo_summary, "repo_reviews": repo_reviews,
+            "repo_default": rr.get("_default"),
             "endpoints": ep_summary, "llm_default": eps.get("_default", {}),
             "host": {"avail_gib": avail, "max_working": MAX_WORKING,
                      "working": working, "total_output_tokens": total_out}}
@@ -822,6 +829,16 @@ class H(BaseHTTPRequestHandler):
             if name and re.fullmatch(r"[\w-]+", name):
                 args += ["--name", name]
             return self._send(200, foldctl(*args))
+        if self.path == "/api/repos/review":
+            # Human plane only (not in the agent allowlists): the review
+            # policy IS the merge gate for bellwether-gated repos.
+            name = str(body.get("name") or "")[:32]
+            mode = body.get("review")
+            if not re.fullmatch(r"[\w.-]+", name) or \
+                    mode not in ("bellwether", "human"):
+                return self._send(400, {"error": "name + review "
+                                        "(bellwether|human) required"})
+            return self._send(200, foldctl("repos", "review", name, mode))
         if self.path == "/api/resolve":
             if not body.get("id"):
                 return self._send(400, {"error": "id required"})

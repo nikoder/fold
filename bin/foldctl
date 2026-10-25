@@ -448,6 +448,24 @@ def cmd_repos_add(args):
           + (", default" if reg["_default"] == key else "") + ")")
 
 
+def cmd_repos_review(args):
+    """Flip a project's review policy in the registry.
+
+    Registry-only: the gate itself is enforced by forge protection plus
+    whoever acts on the policy (bellwether auto-merges only when this
+    says 'bellwether'); nothing on the forge needs touching to change it.
+    """
+    reg = repos()
+    entry = reg.get(args.name)
+    if args.name.startswith("_") or not isinstance(entry, dict):
+        sys.exit(f"unknown project {args.name!r}; known: "
+                 f"{[k for k in reg if not k.startswith('_')]}")
+    entry["review"] = args.mode
+    os.makedirs(STATE_DIR, exist_ok=True)
+    json.dump(reg, open(REPOS_FILE, "w"), indent=1)
+    print(f"project {args.name}: review={args.mode}")
+
+
 def cmd_repos_list():
     reg = repos()
     if not any(not k.startswith("_") for k in reg):
@@ -822,7 +840,13 @@ def build_parser():
         p.set_defaults(func=lambda args, fn=fn: fn(args.workspace))
     p = sub.add_parser("repos", help="list registered projects")
     p.set_defaults(func=lambda args: cmd_repos_list())
-    padd = p.add_subparsers(dest="repos_cmd").add_parser(
+    rsub = p.add_subparsers(dest="repos_cmd")
+    prev = rsub.add_parser(
+        "review", help="change a registered project's review policy")
+    prev.add_argument("name")
+    prev.add_argument("mode", choices=["bellwether", "human"])
+    prev.set_defaults(func=cmd_repos_review)
+    padd = rsub.add_parser(
         "add", help="register a work repo (owner/name); --create makes "
         "it on the forge")
     padd.add_argument("path")
