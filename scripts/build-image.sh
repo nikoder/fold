@@ -27,17 +27,27 @@ echo "waiting for cloud-init (network + DNS settle)…"
 incus exec "$B" -- cloud-init status --wait >/dev/null
 
 echo "installing packages…"
-incus exec "$B" -- sh -c '
-  set -e
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get -qq update
-  # nodejs/npm from the distro, NOT pinned to the host's versions: the
-  # toolchain that matters is the one .fold/check containers also get
-  # from apt, so build and verification environments agree. npm still
-  # needs a registry at task time — see FOLD_TASK_ENV (registry funnel).
-  apt-get -qq install -y curl git jq python3 ca-certificates unzip sqlite3 \
-    nodejs npm >/dev/null
-'
+# cloud-init reporting done is not apt-ready: twice observed (2026-10-26),
+# the first apt call straight after `status --wait` died with "Permission
+# denied" on the dpkg lock — as root, with the same command succeeding on
+# a manual rerun seconds later. Boot-time race in the guest; retry it.
+APT_OK=""
+for attempt in 1 2 3 4 5; do
+  if incus exec "$B" -- sh -c '
+    set -e
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -qq update
+    # nodejs/npm from the distro, NOT pinned to the host versions: the
+    # toolchain that matters is the one .fold/check containers also get
+    # from apt, so build and verification environments agree. npm still
+    # needs a registry at task time — see FOLD_TASK_ENV (registry funnel).
+    apt-get -qq install -y curl git jq python3 ca-certificates unzip \
+      sqlite3 nodejs npm >/dev/null
+  '; then APT_OK=1; break; fi
+  echo "apt not ready yet (attempt $attempt), retrying in 10s…"
+  sleep 10
+done
+[ -n "$APT_OK" ] || { echo "package install failed repeatedly"; exit 1; }
 
 echo "creating coder user…"
 incus exec "$B" -- sh -c '
