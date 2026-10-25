@@ -204,6 +204,25 @@ def _forward_hands(store):
         session = ctx.get(h["workspace"])
         if not session:
             continue
+        # Delivery is not processing: agentapi types the note into the
+        # TUI, and a session that is quietly thinking mid-turn reads
+        # "stable" to agentapi's screen-based heuristic — the typed note
+        # is swallowed without a trace (observed on the first
+        # language-menu hand). So a send only becomes "forwarded" once
+        # the note demonstrably started a turn: forward_pending first,
+        # promoted when the session turns running, cleared for a retry
+        # when it stayed stable. A fast turn can double-send; the note
+        # is idempotent and the hand stays open either way.
+        pend = h.get("forward_pending")
+        if pend:
+            if time.time() - pend["t"] < 4:
+                continue
+            probe = agentapi(pend["to"], "/status")
+            if probe.get("status") == "running":
+                h["forwarded"] = {"to": pend["to"], "t": int(time.time())}
+            h.pop("forward_pending", None)
+            dirty = True
+            continue
         try:
             ip = instance_ip(session)
             if not ip:
@@ -227,7 +246,7 @@ def _forward_hands(store):
                 f"open until resolved either way.")
         r = agentapi(session, "/message", {"content": note, "type": "user"})
         if "error" not in r:
-            h["forwarded"] = {"to": session, "t": int(time.time())}
+            h["forward_pending"] = {"to": session, "t": int(time.time())}
             dirty = True
     return dirty
 
