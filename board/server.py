@@ -770,6 +770,19 @@ class H(BaseHTTPRequestHandler):
             # so the agent plane picks projects but never clone targets
             if body.get("repo"):
                 args += ["--repo", str(body["repo"])[:64]]
+            elif body.get("ctx"):
+                # registry-owned default: a dispatch from a shepherd
+                # session inherits that session's project unless it
+                # names one — a shepherd forgetting the field must not
+                # quietly land work on the default scratch repo
+                try:
+                    reg = json.load(open(os.path.join(STATE_DIR,
+                                                      "tasks.json")))
+                    proj = (reg.get(str(body["ctx"])) or {}).get("project")
+                except (FileNotFoundError, json.JSONDecodeError):
+                    proj = None
+                if proj:
+                    args += ["--repo", proj]
             return self._send(200, foldctl(*args, tpl, prompt))
         if self.path == "/api/repos/add":
             # Deliberately NOT in AGENT_PLANE_PATHS: registering repos
@@ -801,6 +814,18 @@ class H(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "verb must be one of "
                                         f"{sorted(ALLOWED_VERBS)} + workspace"})
             return self._send(200, foldctl(verb, ws))
+        m = re.fullmatch(r"/api/task/([\w-]+)/keys", self.path)
+        if m:
+            # Raw keystrokes into the session's terminal: the human
+            # typing through the Screen view (harness commands, the odd
+            # permission prompt). Human plane only — this path is not in
+            # the agent allowlists, so the gate 403s agents above.
+            keys = body.get("keys", "")
+            if not keys:
+                return self._send(400, {"error": "keys required"})
+            return self._send(200, agentapi(
+                m.group(1), "/message",
+                {"content": str(keys)[:256], "type": "raw"}))
         m = re.fullmatch(r"/api/task/([\w-]+)/message", self.path)
         if m:
             content = body.get("content", "").strip()

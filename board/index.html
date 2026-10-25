@@ -110,7 +110,8 @@
           font-size:.74rem; line-height:1.5; border-radius:8px; padding:.8rem .9rem;
           flex:1; min-height:300px; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
   /* live screen is a fixed terminal grid: never wrap its columns */
-  .term.screen { white-space:pre; overflow-wrap:normal; overflow-x:auto; }
+  .term.screen { white-space:pre; overflow-wrap:normal; overflow-x:auto; cursor:text; }
+  .term.screen:focus { outline:2px solid var(--accent); outline-offset:-2px; }
   .vtab.active { color:var(--ink); border-color:var(--accent); }
   /* conversation markdown (DOM-built; .term's pre-wrap keeps newlines) */
   .term p { margin:.45em 0; }
@@ -201,6 +202,7 @@
     <div style="display:flex; gap:.4rem; margin-bottom:.5rem;">
       <button class="quiet vtab active" id="tdChat">Conversation</button>
       <button class="quiet vtab" id="tdScreen">Screen</button>
+      <span class="m" id="tdKeyHint" style="align-self:center;" hidden></span>
     </div>
     <div class="term" id="tdTerm">connecting…</div>
     <div class="msgrow">
@@ -355,6 +357,9 @@ function setVisitMode(mode) {
   if (screenSrc) { screenSrc.close(); screenSrc = null; }
   if (mode === "screen" && visiting) {
     $("#tdTerm").textContent = "connecting to live screen…";
+    $("#tdTerm").tabIndex = 0;
+    $("#tdKeyHint").textContent = KEYHINT_IDLE;
+    $("#tdKeyHint").hidden = false;
     screenSrc = new EventSource(`/api/task/${visiting}/screen`);
     screenSrc.addEventListener("screen", (e) => {
       try { $("#tdTerm").textContent = JSON.parse(e.data).screen; }
@@ -362,11 +367,66 @@ function setVisitMode(mode) {
     });
     // idle streams time out server-side; EventSource reconnects itself
   } else {
+    $("#tdTerm").removeAttribute("tabindex");
+    $("#tdKeyHint").hidden = true;
     $("#tdTerm").textContent = "connecting…";
     lastChat = null;  // the cache must not outlive what is on screen
     pollVisit();
   }
 }
+// Typing into the Screen view: keystrokes forward to the session's real
+// terminal via agentapi raw input — harness commands, the odd permission
+// prompt. A serial queue preserves key order; chunked for the server cap.
+const KEYHINT_IDLE = "click the screen to type into the session";
+const KEYHINT_LIVE = "keys go to the agent's terminal (Esc too) — click elsewhere to release";
+const KEYMAP = {Enter:"\r", Tab:"\t", Backspace:"\x7f", Escape:"\x1b",
+  Delete:"\x1b[3~", ArrowUp:"\x1b[A", ArrowDown:"\x1b[B",
+  ArrowRight:"\x1b[C", ArrowLeft:"\x1b[D", Home:"\x1b[H", End:"\x1b[F",
+  PageUp:"\x1b[5~", PageDown:"\x1b[6~"};
+let keyQueue = Promise.resolve();
+function sendKeys(s) {
+  if (!visiting) return;
+  const ws = visiting;
+  for (let i = 0; i < s.length; i += 200) {
+    const part = s.slice(i, i + 200);
+    keyQueue = keyQueue.then(() =>
+      fetch(`/api/task/${ws}/keys`, {method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({keys: part})})).catch(()=>{});
+  }
+}
+$("#tdTerm").addEventListener("keydown", (e) => {
+  if (visitMode !== "screen" || document.activeElement !== e.currentTarget) return;
+  if (e.metaKey || e.altKey) return;            // the browser's business
+  if (e.ctrlKey) {
+    if (e.key === "v") return;                  // paste handled below
+    if (/^[a-z]$/.test(e.key)) {
+      sendKeys(String.fromCharCode(e.key.charCodeAt(0) - 96));
+      e.preventDefault();
+    }
+    return;
+  }
+  const mapped = (e.key === "Tab" && e.shiftKey) ? "\x1b[Z"
+    : (KEYMAP[e.key] ?? (e.key.length === 1 ? e.key : null));
+  if (mapped !== null) { sendKeys(mapped); e.preventDefault(); }
+});
+$("#tdTerm").addEventListener("paste", (e) => {
+  if (visitMode !== "screen") return;
+  const t = e.clipboardData ? e.clipboardData.getData("text") : "";
+  if (t) sendKeys(t);
+  e.preventDefault();
+});
+$("#tdTerm").addEventListener("focus", () => {
+  if (visitMode === "screen") $("#tdKeyHint").textContent = KEYHINT_LIVE;
+});
+$("#tdTerm").addEventListener("blur", () => {
+  if (visitMode === "screen") $("#tdKeyHint").textContent = KEYHINT_IDLE;
+});
+// while the terminal holds focus, Esc belongs to it, not to the dialog
+$("#taskdlg").addEventListener("cancel", (e) => {
+  if (visitMode === "screen" && document.activeElement === $("#tdTerm"))
+    e.preventDefault();
+});
 $("#tdChat").onclick = () => setVisitMode("chat");
 $("#tdScreen").onclick = () => setVisitMode("screen");
 // Minimal markdown for the Conversation view. Agent text is UNTRUSTED
