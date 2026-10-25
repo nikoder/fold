@@ -121,7 +121,11 @@ curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR
 # KEY=VALUE lines; unknown keys ignored. Defaults suit a small python repo.
 CONF=$(curl -sf -H "Authorization: token $TOKEN" \
   "$FORGEJO/api/v1/repos/$REPO/raw/.fold/config?ref=$HEADREF" || true)
-conf() { printf '%s\n' "$CONF" | grep -oP "^$1=\K.*" | head -1; }
+# A missing key is an answer, not an error: grep's exit 1 inside the
+# substitution would kill the whole run under set -e (it did — the
+# first seeded repo had no image key, and line-130's assignment was the
+# silent death the ERR trap finally named).
+conf() { printf '%s\n' "$CONF" | grep -oP "^$1=\K.*" | head -1 || true; }
 # Default to the locally pinned builder base, NEVER a remote images:
 # alias: runtime remote launches stall or die on the registry's mood
 # (the lesson build-image.sh already encodes), and they did exactly that
