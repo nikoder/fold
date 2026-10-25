@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>fold 🐑</title>
+<title>fold</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐑</text></svg>">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,650&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
@@ -158,6 +158,7 @@
       <select id="modelSel" style="flex:2;" aria-label="Model"></select>
     </div>
     <textarea id="prompt" placeholder="Task for the agent — AGENTS.md carries the workflow; write only the work itself."></textarea>
+    <label style="font-size:.78rem; display:block; margin-bottom:.6rem;"><input type="checkbox" id="discussFirst"> discuss first — the agent explores and talks it through with you (via Visit) before any implementation</label>
     <div class="drow">
       <button class="quiet" id="cancel">Cancel</button>
       <button id="go">Dispatch</button>
@@ -467,6 +468,9 @@ async function refresh() {
   [...document.querySelectorAll("#board .cards")].forEach((el, i) => {
     if (scrolls[i]) el.scrollTop = scrolls[i];
   });
+  // the favicon carries the sheep; the title carries exactly one live
+  // signal — an open hand is the state worth a glance across tabs
+  document.title = (s.hands.length ? "✋ " : "") + "fold";
   const stopped = s.tasks.filter(t => ["stopped","stopping"].includes(t.ws_status));
   $("#archTab").textContent = `Archive (${stopped.length})`;
   $("#boardTab").textContent = s.hands.length ? "Board ✋" : "Board";
@@ -522,7 +526,16 @@ $("#projAdd").onclick = async () => {
 $("#dispatchBtn").onclick = () => $("#dlg").showModal();
 $("#cancel").onclick = () => $("#dlg").close();
 $("#go").onclick = async () => {
-  const body = {template: $("#tpl").value, prompt: $("#prompt").value.trim(),
+  let promptText = $("#prompt").value.trim();
+  if (promptText && $("#discussFirst").checked) promptText =
+    "DESIGN DISCUSSION FIRST — do not begin the work yet. Read whatever " +
+    "context you need (your checkout, the contract), then discuss the " +
+    "goal with the human through this session: they will message you " +
+    "here. Ask questions, surface options and trade-offs, and converge " +
+    "on scope together. Begin implementation only when the human " +
+    "explicitly says to proceed; resting between replies is correct.\n\n" +
+    "The goal to discuss:\n" + promptText;
+  const body = {template: $("#tpl").value, prompt: promptText,
                 repo: $("#repoSel").value || undefined,
                 llm: $("#llmSel").value || undefined,
                 model: $("#modelSel").value || undefined};
