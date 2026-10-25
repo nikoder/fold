@@ -109,6 +109,11 @@ PY
 
 DIFFFILE=$(mktemp); CHECKFILE=$(mktemp); FILESFILE=$(mktemp)
 trap 'rm -f "$DIFFFILE" "$CHECKFILE" "$FILESFILE"' EXIT
+# A run that dies must tombstone its own card: without this, set -e
+# exits leave bellwether.json "active" forever and the board shows a
+# review that is no longer happening (observed: stuck amber card).
+trap 'bw failed "run aborted (error near line $LINENO)"' ERR
+trap 'bw failed "run terminated"' TERM INT
 bw checks "review of PR #$PR ($REPO) started: fetching diff, launching check container"
 curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR.diff" > "$DIFFFILE"
 
@@ -117,7 +122,12 @@ curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR
 CONF=$(curl -sf -H "Authorization: token $TOKEN" \
   "$FORGEJO/api/v1/repos/$REPO/raw/.fold/config?ref=$HEADREF" || true)
 conf() { printf '%s\n' "$CONF" | grep -oP "^$1=\K.*" | head -1; }
-IMAGE=$(conf image);    IMAGE=${IMAGE:-images:alpine/3.22}
+# Default to the locally pinned builder base, NEVER a remote images:
+# alias: runtime remote launches stall or die on the registry's mood
+# (the lesson build-image.sh already encodes), and they did exactly that
+# here — a seeded repo's config has no image key, the old alpine remote
+# default kicked in, and the run died silently mid-card.
+IMAGE=$(conf image);    IMAGE=${IMAGE:-fold-builder-base}
 PKGS=$(conf packages);  PKGS=${PKGS:-git python3}
 CHECK_TIMEOUT=$(conf timeout); CHECK_TIMEOUT=${CHECK_TIMEOUT:-300}
 
