@@ -127,9 +127,11 @@
   #taskdlg { width:min(1100px,96vw); height:min(88vh,950px);
              flex-direction:column; }
   #taskdlg[open] { display:flex; }
-  .msgrow { display:flex; gap:.5rem; margin-top:.6rem; }
-  .msgrow input { flex:1; font:inherit; font-size:.8rem; background:var(--raised);
-    color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:.45em .6em; }
+  .msgrow { display:flex; gap:.5rem; margin-top:.6rem; align-items:flex-start; }
+  .msgrow textarea { flex:1; width:auto; font:inherit; font-size:.8rem;
+    background:var(--raised); color:var(--ink); border:1px solid var(--line);
+    border-radius:6px; padding:.45em .6em; margin-bottom:0;
+    min-height:2.6em; max-height:10em; overflow-y:auto; resize:vertical; }
   #toast { position:fixed; bottom:1rem; left:50%; transform:translateX(-50%);
            background:var(--ink); color:var(--bg); padding:.5em 1em; border-radius:8px;
            font-size:.78rem; opacity:0; transition:opacity .2s; max-width:80vw; }
@@ -206,13 +208,13 @@
     </div>
     <div class="term" id="tdTerm">connecting…</div>
     <div class="msgrow">
-      <input id="tdMsg" placeholder="Message the agent (lands in its session via agentapi)…">
-      <button id="tdSend">Send</button>
+      <textarea id="tdMsg" rows="2" placeholder="Message the agent (Enter sends · Shift+Enter for a newline)…"></textarea>
+      <button id="tdSend" type="button">Send</button>
     </div>
     <div class="drow" style="margin-top:.6rem;">
-      <button class="quiet" id="tdPause">Pause</button>
-      <button class="quiet" id="tdStop">Stop</button>
-      <button class="quiet" id="tdClose">Close</button>
+      <button class="quiet" id="tdPause" type="button">Pause</button>
+      <button class="quiet" id="tdStop" type="button">Stop</button>
+      <button class="quiet" id="tdClose" type="button">Close</button>
     </div>
   </dialog>
   <div id="toast" role="status"></div>
@@ -355,6 +357,9 @@ function setVisitMode(mode) {
   $("#tdScreen").classList.toggle("active", mode === "screen");
   $("#tdTerm").classList.toggle("screen", mode === "screen");
   if (screenSrc) { screenSrc.close(); screenSrc = null; }
+  // Screen mode IS the input surface — the chat box would be a second,
+  // confusing way to talk; it belongs to the Conversation view.
+  $(".msgrow").hidden = visitingIsBW || mode === "screen";
   if (mode === "screen" && visiting) {
     $("#tdTerm").textContent = "connecting to live screen…";
     $("#tdTerm").tabIndex = 0;
@@ -366,6 +371,7 @@ function setVisitMode(mode) {
       catch {}
     });
     // idle streams time out server-side; EventSource reconnects itself
+    $("#tdTerm").focus();   // typeable the moment the screen appears
   } else {
     $("#tdTerm").removeAttribute("tabindex");
     $("#tdKeyHint").hidden = true;
@@ -523,26 +529,43 @@ async function pollVisit() {
   if (!msgs.length) el.textContent = "no output yet";
   if (stick) el.scrollTop = el.scrollHeight;
 }
+let visitingIsBW = false;
 function openTask(ws, name, st) {
   visiting = ws;
   // bellwether runs are script executions, not sessions: the transcript
   // replays, but there is nothing to message, pause, or stop
-  const isBW = ws.startsWith("bellwether-");
-  $(".msgrow").hidden = isBW;
-  $("#tdPause").hidden = isBW;
-  $("#tdStop").hidden = isBW;
-  $("#tdScreen").hidden = isBW;
+  visitingIsBW = ws.startsWith("bellwether-");
+  $("#tdPause").hidden = visitingIsBW;
+  $("#tdStop").hidden = visitingIsBW;
+  $("#tdScreen").hidden = visitingIsBW;
   $("#tdTitle").textContent = (name || ws) + (st && st!=="running" ? ` · ${st}` : "");
+  $("#tdMsg").value = drafts[ws] || "";
   tdChips();
   $("#taskdlg").showModal();
   setVisitMode("chat");
   visitTimer = setInterval(pollVisit, 2500);
+  // the open Visit survives a reload: the hash names it, drafts carry it
+  if (location.hash !== "#visit=" + ws)
+    history.replaceState(null, "", "#visit=" + ws);
 }
 function closeTask() {
   visiting = null;
   clearInterval(visitTimer);
   if (screenSrc) { screenSrc.close(); screenSrc = null; }
+  history.replaceState(null, "", location.pathname + location.search);
   $("#taskdlg").close();
+}
+let deepLinked = false;
+function tryDeepLink() {
+  // reload with a Visit open: the hash reopens it (no SPA machinery —
+  // one hash, read once, written by open/close)
+  if (deepLinked) return;
+  deepLinked = true;
+  const m = location.hash.match(/^#visit=([\w.-]+)$/);
+  if (!m || $("#taskdlg").open) return;
+  const t = ((lastState || {}).tasks || []).find(x => x.workspace === m[1]);
+  openTask(m[1], t ? t.name : m[1],
+           t ? (t.frozen ? "frozen" : t.ws_status) : "");
 }
 $("#tdClose").onclick = closeTask;
 // Backdrop click dismisses the Visit view — it holds no unsaved state
@@ -556,19 +579,43 @@ $("#taskdlg").addEventListener("click", (e) => {
 $("#taskdlg").addEventListener("close", () => {
   visiting=null; clearInterval(visitTimer);
   if (screenSrc) { screenSrc.close(); screenSrc = null; }
+  if (location.hash.startsWith("#visit="))
+    history.replaceState(null, "", location.pathname + location.search);
 });
 $("#tdPause").onclick = () => { act("pause", visiting); };
 $("#tdStop").onclick = () => { const w=visiting; closeTask(); act("stop", w); };
+// Unsent message drafts survive reloads, per task (the dispatch form
+// already works this way; a half-written thought is work too).
+const DRAFT_KEY = "fold-visit-drafts";
+let drafts = {};
+try { drafts = JSON.parse(localStorage.getItem(DRAFT_KEY)) || {}; } catch (e) {}
+function saveDrafts() {
+  try { localStorage.setItem(DRAFT_KEY, JSON.stringify(drafts)); } catch (e) {}
+}
+$("#tdMsg").addEventListener("input", () => {
+  if (!visiting) return;
+  const v = $("#tdMsg").value;
+  if (v) drafts[visiting] = v; else delete drafts[visiting];
+  saveDrafts();
+});
 $("#tdSend").onclick = async () => {
   const msg = $("#tdMsg").value.trim();
   if (!msg || !visiting) return;
-  $("#tdMsg").value = "";
-  const r = await api(`/api/task/${visiting}/message`, {method:"POST",
+  const ws = visiting;
+  const r = await api(`/api/task/${ws}/message`, {method:"POST",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({content: msg})});
-  if (r.error) toast(r.error); else pollVisit();
+  if (r.error) { toast(r.error); return; }  // box and draft keep the text
+  $("#tdMsg").value = "";
+  delete drafts[ws]; saveDrafts();
+  lastChat = null;
+  pollVisit();
 };
-$("#tdMsg").addEventListener("keydown", (e) => { if (e.key==="Enter") $("#tdSend").click(); });
+$("#tdMsg").addEventListener("keydown", (e) => {
+  // Enter sends; Shift+Enter is the newline. preventDefault keeps the
+  // key from reaching anything else in the dialog.
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#tdSend").click(); }
+});
 async function resolveHand(id) {
   await api("/api/resolve", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id})});
@@ -620,6 +667,7 @@ async function refresh() {
   endpoints = s.endpoints || {}; llmDefault = s.llm_default || {};
   repos = s.repos || {}; repoDefault = s.repo_default || null;
   lastState = s;
+  tryDeepLink();
   if ($("#taskdlg").open) tdChips();
   else { fillLlmSelects(); fillRepoSelect(); }
   $("#stats").innerHTML =
