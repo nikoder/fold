@@ -23,7 +23,9 @@ live OUTSIDE this repo in STATE_DIR/fold.env — plain KEY=VALUE lines;
 process env overrides it. Keys:
   FOLD_FORGEJO        https://git.example.com
   FOLD_WORK_REPO      owner/repo agents work on
-  FOLD_SHEPHERD_REPO  owner/repo shepherds plan from (default: WORK_REPO)
+  FOLD_SHEPHERD_REPO  owner/repo a shepherd dispatched WITHOUT --repo
+                      plans from (default: WORK_REPO); with --repo the
+                      shepherd checks out that project instead
   FOLD_AUTHOR_LOGIN   forge account agents author as (default: fold-alpha)
   FOLD_NTFY           https://ntfy.example.com/fold  (full topic URL)
   FOLD_BOARD_URL      http://<incus-bridge-ip>:7070  (shepherds only)
@@ -446,8 +448,8 @@ def cmd_repos_list():
               + ("  (default)" if k == d else ""))
 
 
-def opencode_config(url, key, model):
-    return json.dumps({
+def opencode_config(url, key, model, role_file=None):
+    c = {
         "$schema": "https://opencode.ai/config.json",
         "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
         "provider": {"fold": {
@@ -455,7 +457,13 @@ def opencode_config(url, key, model):
             "options": {"baseURL": url, "apiKey": key},
             "models": {model: {"name": model}}}},
         "model": f"fold/{model}",
-    })
+    }
+    if role_file:
+        # the role contract rides OUTSIDE the checkout: the checkout's
+        # AGENTS.md belongs to whoever the repo addresses (its authors),
+        # not necessarily to this session's role
+        c["instructions"] = [role_file]
+    return json.dumps(c)
 
 
 def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
@@ -479,6 +487,19 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     # PR body naming someone else's workspace must not be able to route
     # a doorbell into their session).
     branch = f"agent/{login}/{name}"
+    role = ""
+    if flavor == "shepherd":
+        # The shepherd's checkout is its SUBJECT: the project it plans
+        # for. Without an explicit project it plans from the fold's own
+        # repo, as the first shepherds did. Either way its role contract
+        # cannot ride in the checkout's AGENTS.md — that file addresses
+        # the authors dispatched onto the repo — so the contract boots
+        # into the home as ~/ROLE.md instead (see fold-boot.sh).
+        if repo is None:
+            work_repo = conf("FOLD_SHEPHERD_REPO", work_repo)
+            project = None
+        role = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "contract", "SHEPHERD.md")).read()
     env = {
         "FOLD_BRANCH": branch,
         "FORGEJO_URL": forge,
@@ -492,10 +513,12 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
         "GIT_COMMITTER_NAME": login,
         "GIT_COMMITTER_EMAIL": email,
     }
-    repo = f"https://{login}:{author}@{forge_netloc}/{work_repo}.git"
+    # Tokenless clone URL: `git remote -v` output lands in transcripts
+    # (board-archived, agent-plane-readable), so the token must never
+    # ride in the remote. The boot script hands it to git through a
+    # credential store instead.
+    repo = f"https://{forge_netloc}/{work_repo}.git"
     if flavor == "shepherd":
-        shep_repo = conf("FOLD_SHEPHERD_REPO", work_repo)
-        repo = f"https://{login}:{author}@{forge_netloc}/{shep_repo}.git"
         env.update(FOLD_BOARD_URL=require("FOLD_BOARD_URL",
                                           "shepherd dispatch"),
                    FOLD_BOARD_TOKEN=cred("FOLD_BOARD_TOKEN"),
@@ -508,9 +531,11 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     incus("config", "set", inst,
           f"limits.memory={max(2, int(need * 2))}GiB",
           "limits.cpu=2")
-    for k, v in (("prompt", prompt), ("repo", repo),
+    for k, v in (("prompt", prompt), ("repo", repo), ("role", role),
                  ("env", json.dumps(env)),
-                 ("opencode_config", opencode_config(url, key, model))):
+                 ("opencode_config", opencode_config(
+                     url, key, model,
+                     role_file="/home/coder/ROLE.md" if role else None))):
         # key=value as ONE argument: a value starting with "--" (e.g. a
         # prompt that begins with a mistyped flag) would otherwise be
         # parsed by the incus CLI as a flag and abort mid-provision.
