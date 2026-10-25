@@ -305,6 +305,14 @@ def seed_repo(path, admin, me):
                          " see the fold README).\n"
                          "packages=git python3\n"
                          "timeout=300\n"),
+        # Merge commits are born clean: Forgejo's default prefill adds a
+        # Reviewed-on URL naming the forge host — metadata that outlives
+        # the repo's walls if it is ever mirrored (same lesson as the
+        # fold repo's own template).
+        ".gitea/default_merge_message/MERGE_TEMPLATE.md": (
+            "Merge pull request '${PullRequestTitle}' "
+            "(#${PullRequestIndex}) from ${HeadBranch} into "
+            "${BaseBranch}\n\n${ReviewedBy}\n"),
     }
     d = tempfile.mkdtemp(prefix="fold-seed-")
     try:

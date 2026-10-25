@@ -78,6 +78,8 @@
   .card.hand { border-color:var(--attn); box-shadow:0 0 0 1px var(--attn); }
   .card.clickable { cursor:pointer; }
   .card.clickable:hover { border-color:var(--accent); }
+  .chip.clickable { cursor:pointer; }
+  .chip.clickable:hover { border-color:var(--accent); }
   .card.bellwether { border-left:4px solid var(--attn); background:
     linear-gradient(to right, color-mix(in srgb, var(--attn) 7%, var(--surface)), var(--surface) 40%); }
   .card.shepherd { border-left:4px solid var(--accent); background:
@@ -708,7 +710,9 @@ async function refresh() {
     chip("neutral", `host ${s.host.avail_gib} GiB free`) +
     (s.hands.length ? chip("attn", `✋ ${s.hands.length}`) : "") +
     (s.bellwether && s.bellwether.totals && s.bellwether.totals.reviews
-      ? chip("neutral", `🔔 ${s.bellwether.totals.reviews} reviews · ${fmtTok(s.bellwether.totals.input)}/${fmtTok(s.bellwether.totals.output)}`) : "") +
+      ? (s.bellwether.last
+          ? `<span class="chip neutral clickable" title="revisit the last review's run log (PR #${s.bellwether.last.pr})" onclick="openTask('bellwether-pr${s.bellwether.last.pr}','bellwether · PR #${s.bellwether.last.pr}','review')">🔔 ${s.bellwether.totals.reviews} reviews · ${fmtTok(s.bellwether.totals.input)}/${fmtTok(s.bellwether.totals.output)}</span>`
+          : chip("neutral", `🔔 ${s.bellwether.totals.reviews} reviews · ${fmtTok(s.bellwether.totals.input)}/${fmtTok(s.bellwether.totals.output)}`)) : "") +
     (s.fleet.some(f=>f.status==="Frozen") ? chip("frozen","frozen present") : "");
   // preserve column scroll across re-renders: a jumped list under a
   // poised cursor once restarted a container by accident
