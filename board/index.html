@@ -510,7 +510,11 @@ function mdRender(container, text) {
 let lastChat = null;
 async function pollVisit() {
   if (!visiting || visitMode !== "chat") return;
-  const d = await fetch(`/api/task/${visiting}/messages`).then(r=>r.json());
+  const ws = visiting;
+  const d = await fetch(`/api/task/${ws}/messages`).then(r=>r.json());
+  // a response that outlived its view must not paint: the dialog may
+  // have moved to another task (or to Screen) while this was in flight
+  if (ws !== visiting || visitMode !== "chat") return;
   const el = $("#tdTerm");
   if (d.error) { el.textContent = d.error; lastChat = null; return; }
   const cache = visiting + JSON.stringify(d);
