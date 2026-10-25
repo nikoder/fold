@@ -30,6 +30,10 @@ process env overrides it. Keys:
   FOLD_NTFY           https://ntfy.example.com/fold  (full topic URL)
   FOLD_BOARD_URL      http://<incus-bridge-ip>:7070  (shepherds only)
   FOLD_AUTHOR_EMAIL   agent commit email (default: <login>@fold.invalid)
+  FOLD_TASK_ENV       JSON object of extra env vars injected into every
+                      task, e.g. {"NPM_CONFIG_REGISTRY":
+                      "https://npm.example.com"} — how dependency
+                      funnels reach agents behind the egress wall
 Plus plain env config:
   FOLD_CREDS       (~/.config/fold/creds.env)   # tokens, 0600
 """
@@ -519,6 +523,16 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
         "GIT_COMMITTER_NAME": login,
         "GIT_COMMITTER_EMAIL": email,
     }
+    # Deployment-chosen extras, e.g. package-registry funnels: the egress
+    # wall stays shut and dependencies arrive through named routes the
+    # deployment controls (NPM_CONFIG_REGISTRY, PIP_INDEX_URL, ...).
+    extra = conf("FOLD_TASK_ENV")
+    if extra:
+        try:
+            env.update({str(k): str(v)
+                        for k, v in json.loads(extra).items()})
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            sys.exit("FOLD_TASK_ENV must be a JSON object of env vars")
     # Tokenless clone URL: `git remote -v` output lands in transcripts
     # (board-archived, agent-plane-readable), so the token must never
     # ride in the remote. The boot script hands it to git through a

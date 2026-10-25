@@ -54,6 +54,15 @@ Portability in the README for what is still assumed.
    keeps reporting what it stops. Gotcha: in-place ACL rule edits can
    fail with an nft "no such chain" error (chain naming drift); create
    a fresh ACL with the new rules and point the profile at it instead.
+   **Dependencies behind the wall**: don't punch registry holes in the
+   ACL (npm rides CDN anycast — allowlisting its IPs allowlists half
+   the internet). Run a read-through cache behind your reverse proxy
+   instead (verdaccio for npm; it must rewrite tarball URLs, a plain
+   proxy route can't) and hand agents the route via `FOLD_TASK_ENV`,
+   e.g. `{"NPM_CONFIG_REGISTRY":"https://npm.example.com"}`. No
+   services of your own? Point the same variable at the public
+   registry and add a matching egress allow — your wall, your
+   trade-off.
 5. **Golden image**: pin a base locally
    (`incus image copy images:debian/13/cloud local: --alias
    fold-builder-base` — never launch from `images:` at runtime, the

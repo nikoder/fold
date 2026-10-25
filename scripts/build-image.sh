@@ -31,7 +31,12 @@ incus exec "$B" -- sh -c '
   set -e
   export DEBIAN_FRONTEND=noninteractive
   apt-get -qq update
-  apt-get -qq install -y curl git jq python3 ca-certificates unzip sqlite3 >/dev/null
+  # nodejs/npm from the distro, NOT pinned to the host's versions: the
+  # toolchain that matters is the one .fold/check containers also get
+  # from apt, so build and verification environments agree. npm still
+  # needs a registry at task time — see FOLD_TASK_ENV (registry funnel).
+  apt-get -qq install -y curl git jq python3 ca-certificates unzip sqlite3 \
+    nodejs npm >/dev/null
 '
 
 echo "creating coder user…"
