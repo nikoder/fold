@@ -367,8 +367,13 @@ function setVisitMode(mode) {
     $("#tdTerm").tabIndex = 0;
     $("#tdKeyHint").textContent = KEYHINT_IDLE;
     $("#tdKeyHint").hidden = false;
-    screenSrc = new EventSource(`/api/task/${visiting}/screen`);
-    screenSrc.addEventListener("screen", (e) => {
+    const src = new EventSource(`/api/task/${visiting}/screen`);
+    screenSrc = src;
+    src.addEventListener("screen", (e) => {
+      // paint only while this source is the CURRENT screen view: a
+      // frame from a stale/leaked stream must never fight the
+      // conversation renderer for the pane
+      if (visitMode !== "screen" || screenSrc !== src) { src.close(); return; }
       try { $("#tdTerm").textContent = JSON.parse(e.data).screen; }
       catch {}
     });
