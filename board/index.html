@@ -109,6 +109,9 @@
   .term { background:#10140F; color:#C9D4C4; font-family:"IBM Plex Mono",monospace;
           font-size:.74rem; line-height:1.5; border-radius:8px; padding:.8rem .9rem;
           flex:1; min-height:300px; overflow-y:auto; white-space:pre-wrap; overflow-wrap:anywhere; }
+  /* live screen is a fixed terminal grid: never wrap its columns */
+  .term.screen { white-space:pre; overflow-wrap:normal; overflow-x:auto; }
+  .vtab.active { color:var(--ink); border-color:var(--accent); }
   /* no display on the base rule: it would override the UA's display:none
      for closed dialogs (symptom: modal lingers after close until reflow) */
   #taskdlg { width:min(1100px,96vw); height:min(88vh,950px);
@@ -186,6 +189,10 @@
   <dialog id="taskdlg">
     <h4 id="tdTitle" style="margin-bottom:.35rem;">task</h4>
     <div class="m" id="tdChips" style="display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:.5rem;"></div>
+    <div style="display:flex; gap:.4rem; margin-bottom:.5rem;">
+      <button class="quiet vtab active" id="tdChat">Conversation</button>
+      <button class="quiet vtab" id="tdScreen">Screen</button>
+    </div>
     <div class="term" id="tdTerm">connecting…</div>
     <div class="msgrow">
       <input id="tdMsg" placeholder="Message the agent (lands in its session via agentapi)…">
@@ -328,8 +335,32 @@ function setView(v) {
 }
 document.querySelectorAll(".tab").forEach(t =>
   t.onclick = () => setView(t.dataset.view));
+let visitMode = "chat", screenSrc = null;
+function setVisitMode(mode) {
+  // Conversation = the full record (opencode.db via the board); Screen =
+  // the live terminal grid streamed from agentapi, for watching it work.
+  visitMode = mode;
+  $("#tdChat").classList.toggle("active", mode === "chat");
+  $("#tdScreen").classList.toggle("active", mode === "screen");
+  $("#tdTerm").classList.toggle("screen", mode === "screen");
+  if (screenSrc) { screenSrc.close(); screenSrc = null; }
+  if (mode === "screen" && visiting) {
+    $("#tdTerm").textContent = "connecting to live screen…";
+    screenSrc = new EventSource(`/api/task/${visiting}/screen`);
+    screenSrc.addEventListener("screen", (e) => {
+      try { $("#tdTerm").textContent = JSON.parse(e.data).screen; }
+      catch {}
+    });
+    // idle streams time out server-side; EventSource reconnects itself
+  } else {
+    $("#tdTerm").textContent = "connecting…";
+    pollVisit();
+  }
+}
+$("#tdChat").onclick = () => setVisitMode("chat");
+$("#tdScreen").onclick = () => setVisitMode("screen");
 async function pollVisit() {
-  if (!visiting) return;
+  if (!visiting || visitMode !== "chat") return;
   const d = await fetch(`/api/task/${visiting}/messages`).then(r=>r.json());
   const el = $("#tdTerm");
   if (d.error) { el.textContent = d.error; return; }
@@ -352,16 +383,17 @@ function openTask(ws, name, st) {
   $(".msgrow").hidden = isBW;
   $("#tdPause").hidden = isBW;
   $("#tdStop").hidden = isBW;
+  $("#tdScreen").hidden = isBW;
   $("#tdTitle").textContent = (name || ws) + (st && st!=="running" ? ` · ${st}` : "");
   tdChips();
-  $("#tdTerm").textContent = "connecting…";
   $("#taskdlg").showModal();
-  pollVisit();
+  setVisitMode("chat");
   visitTimer = setInterval(pollVisit, 2500);
 }
 function closeTask() {
   visiting = null;
   clearInterval(visitTimer);
+  if (screenSrc) { screenSrc.close(); screenSrc = null; }
   $("#taskdlg").close();
 }
 $("#tdClose").onclick = closeTask;
@@ -373,7 +405,10 @@ $("#taskdlg").addEventListener("click", (e) => {
   if (e.clientX < r.left || e.clientX > r.right ||
       e.clientY < r.top || e.clientY > r.bottom) closeTask();
 });
-$("#taskdlg").addEventListener("close", () => { visiting=null; clearInterval(visitTimer); });
+$("#taskdlg").addEventListener("close", () => {
+  visiting=null; clearInterval(visitTimer);
+  if (screenSrc) { screenSrc.close(); screenSrc = null; }
+});
 $("#tdPause").onclick = () => { act("pause", visiting); };
 $("#tdStop").onclick = () => { const w=visiting; closeTask(); act("stop", w); };
 $("#tdSend").onclick = async () => {

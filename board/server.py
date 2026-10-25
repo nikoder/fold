@@ -343,8 +343,78 @@ def _instance_for(ws):
     return None
 
 
-def _harvest_tokens(ws, tokens):
-    """Sum per-message token usage from the workspace's opencode.db.
+def _pull_db(ws, tag="tok"):
+    """Pull the workspace's opencode.db (plus WAL) to a throwaway host
+    copy; returns its path, or None when there is no instance or no db.
+
+    Tags keep the archiver and on-demand readers off each other's
+    copies. Stale sidecars are removed first: replaying a previous
+    cycle's WAL over this cycle's db would resurrect old state.
+    """
+    inst = _instance_for(ws)
+    if not inst:
+        return None
+    tmp = f"/tmp/{tag}-{ws}"
+    base = f"{inst}/home/coder/.local/share/opencode/opencode.db"
+    ok = False
+    for suffix in ("", "-wal", "-shm"):
+        dst = f"{tmp}.db{suffix}"
+        try:
+            os.unlink(dst)
+        except FileNotFoundError:
+            pass
+        r = subprocess.run(["incus", "file", "pull", base + suffix, dst],
+                           capture_output=True, timeout=60)
+        if not suffix:
+            ok = r.returncode == 0
+    return f"{tmp}.db" if ok else None
+
+
+def _db_messages(dbpath):
+    """Rebuild the conversation from a pulled opencode.db copy.
+
+    agentapi messages are screen scrapes — a response longer than the
+    TUI viewport survives only as its tail. The db holds every part in
+    full, so Visit reads here first and keeps the scrape as fallback
+    for harnesses without a db adapter.
+    """
+    import sqlite3 as sq
+    try:
+        con = sq.connect(dbpath)
+        rows = con.execute(
+            "SELECT m.id, m.data, p.data FROM message m "
+            "LEFT JOIN part p ON p.message_id = m.id "
+            "ORDER BY m.rowid, p.rowid").fetchall()
+        con.close()
+    except Exception:
+        return None
+    out, last_id = [], None
+    for mid, mdata, pdata in rows:
+        try:
+            m = json.loads(mdata)
+            p = json.loads(pdata) if pdata else {}
+        except json.JSONDecodeError:
+            continue
+        if mid != last_id:
+            out.append({"role": "user" if m.get("role") == "user"
+                        else "agent", "content": ""})
+            last_id = mid
+        kind, prev = p.get("type"), out[-1]["content"]
+        if kind == "text" and p.get("text"):
+            out[-1]["content"] = (prev + "\n\n" if prev else "") + p["text"]
+        elif kind == "reasoning" and p.get("text"):
+            out[-1]["content"] = (prev + "\n" if prev else "") + \
+                f"· reasoned ({len(p['text'])} chars) ·"
+        elif kind == "tool":
+            title = ((p.get("state") or {}).get("title") or "").strip()
+            out[-1]["content"] = (prev + "\n" if prev else "") + \
+                "⚙ " + p.get("tool", "tool") + (f" — {title}" if title else "")
+    out = [e for e in out if e["content"].strip()]
+    return out or None
+
+
+def _harvest_tokens(ws, tokens, dbpath):
+    """Sum per-message token usage from a pulled opencode.db copy.
 
     Attribution without a metering proxy: OpenCode records tokens per
     assistant message; we pull the db (plus WAL) and sum. Totals persist
@@ -352,20 +422,11 @@ def _harvest_tokens(ws, tokens):
     the "token intensity" review signal.
     """
     import sqlite3 as sq
-    inst = _instance_for(ws)
-    if not inst:
-        return
-    tmp = f"/tmp/tok-{ws}"
-    base = f"{inst}/home/coder/.local/share/opencode/opencode.db"
-    for suffix in ("", "-wal", "-shm"):
-        subprocess.run(["incus", "file", "pull", base + suffix,
-                        tmp + ".db" + suffix],
-                       capture_output=True, timeout=60)
     try:
         # writable: these are our throwaway copies, and read-only mode
         # cannot replay the WAL — a fresh session's data lives there
         # entirely until opencode checkpoints
-        con = sq.connect(f"{tmp}.db")
+        con = sq.connect(dbpath)
         tin = tout = msgs = peak = last = cread = cwrite = 0
         for (data,) in con.execute("SELECT data FROM message ORDER BY rowid"):
             try:
@@ -424,14 +485,19 @@ def archive_transcripts():
                               and i["status"] == "Running"}
             live = [n for n in reg if n.lower() in running_native]
             for ws in live:
-                _harvest_tokens(ws, tokens)
-                dirty = True
-                msgs = agentapi(ws, "/messages")
-                if "error" in msgs:
-                    continue
+                db = _pull_db(ws)
+                if db:
+                    _harvest_tokens(ws, tokens, db)
+                    dirty = True
+                msgs = _db_messages(db) if db else None
+                if msgs is None:
+                    scraped = agentapi(ws, "/messages")
+                    if "error" in scraped:
+                        continue
+                    msgs = scraped.get("messages", [])
                 os.makedirs(TRANSCRIPTS, exist_ok=True)
                 json.dump({"archived_at": int(time.time()),
-                           "messages": msgs.get("messages", [])},
+                           "messages": msgs},
                           open(os.path.join(TRANSCRIPTS, f"{ws}.json"), "w"))
             if dirty:
                 os.makedirs(STATE_DIR, exist_ok=True)
@@ -561,16 +627,61 @@ class H(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError):
                 return
         else:
+            m = re.fullmatch(r"/api/task/([\w-]+)/screen", self.path)
+            if m:
+                return self._proxy_screen(m.group(1))
             m = re.fullmatch(r"/api/task/([\w-]+)/messages", self.path)
             if m:
-                live = agentapi(m.group(1), "/messages")
+                ws = m.group(1)
+                # the db is the full record (file pull works in any
+                # instance state); the agentapi scrape and the archive
+                # are fallbacks, in that order
+                db = _pull_db(ws, tag="msg")
+                msgs = _db_messages(db) if db else None
+                if msgs is not None:
+                    return self._send(200, {"messages": msgs,
+                                            "source": "opencode-db"})
+                live = agentapi(ws, "/messages")
                 if "error" not in live:
                     return self._send(200, live)
-                arch = archived_transcript(m.group(1))
+                arch = archived_transcript(ws)
                 if arch:
                     return self._send(200, arch)
                 return self._send(200, live)
             self._send(404, {"error": "not found"})
+
+    def _proxy_screen(self, ws):
+        """Pass agentapi's live-screen SSE through to the browser.
+
+        The browser can't reach the incus bridge; the board can. An idle
+        stream is cut by the read timeout — EventSource reconnects and
+        agentapi replays the current screen, so the view self-heals.
+        """
+        ip = instance_ip(ws)
+        if not ip:
+            return self._send(404, {"error": f"no running instance for {ws}"})
+        req = urllib.request.Request(f"http://{ip}:3284/internal/screen",
+                                     headers={"Host": "localhost"})
+        try:
+            up = urllib.request.urlopen(req, timeout=90)
+        except Exception as e:
+            return self._send(502, {"error": f"screen stream: {e}"})
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        try:
+            while True:
+                line = up.readline()
+                if not line:
+                    return
+                self.wfile.write(line)
+                if line == b"\n":
+                    self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return
+        finally:
+            up.close()
 
     def _forgejo_hook(self):
         """Human-review doorbell. The forge POSTs review events here;
