@@ -112,6 +112,15 @@
   /* live screen is a fixed terminal grid: never wrap its columns */
   .term.screen { white-space:pre; overflow-wrap:normal; overflow-x:auto; }
   .vtab.active { color:var(--ink); border-color:var(--accent); }
+  /* conversation markdown (DOM-built; .term's pre-wrap keeps newlines) */
+  .term p { margin:.45em 0; }
+  .term ul, .term ol { margin:.45em 0; padding-left:1.5em; white-space:normal; }
+  .term li { margin:.2em 0; }
+  .term pre { background:#0A0D09; border:1px solid #232A20; border-radius:6px;
+              padding:.5em .7em; overflow-x:auto; margin:.5em 0; }
+  .term code { background:#0A0D09; border-radius:4px; padding:.05em .3em; }
+  .term .mdh { font-weight:700; margin:.8em 0 .3em; color:#E4EDE0; }
+  .term .mdrole { color:#7E8B78; margin:1.1em 0 .4em; }
   /* no display on the base rule: it would override the UA's display:none
      for closed dialogs (symptom: modal lingers after close until reflow) */
   #taskdlg { width:min(1100px,96vw); height:min(88vh,950px);
@@ -354,25 +363,104 @@ function setVisitMode(mode) {
     // idle streams time out server-side; EventSource reconnects itself
   } else {
     $("#tdTerm").textContent = "connecting…";
+    lastChat = null;  // the cache must not outlive what is on screen
     pollVisit();
   }
 }
 $("#tdChat").onclick = () => setVisitMode("chat");
 $("#tdScreen").onclick = () => setVisitMode("screen");
+// Minimal markdown for the Conversation view. Agent text is UNTRUSTED
+// and this page holds human-plane powers, so everything is built as DOM
+// nodes via textContent — never innerHTML, no sanitizer to get wrong.
+function mdInline(s) {
+  const frag = document.createDocumentFragment();
+  const re = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  let last = 0, m;
+  while ((m = re.exec(s))) {
+    if (m.index > last) frag.append(s.slice(last, m.index));
+    const t = m[0];
+    const el = document.createElement(t[0] === "`" ? "code" : "strong");
+    el.textContent = t[0] === "`" ? t.slice(1, -1) : t.slice(2, -2);
+    frag.append(el);
+    last = m.index + t.length;
+  }
+  frag.append(s.slice(last));
+  return frag;
+}
+function mdRender(container, text) {
+  const lines = text.split("\n");
+  const isItem = (l) => l.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)/);
+  const isHead = (l) => l.match(/^#{1,4}\s+(.*)/);
+  let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (!l.trim()) { i++; continue; }
+    if (l.startsWith("```")) {
+      const buf = []; i++;
+      while (i < lines.length && !lines[i].startsWith("```")) buf.push(lines[i++]);
+      i++;
+      const pre = document.createElement("pre");
+      pre.textContent = buf.join("\n");
+      container.append(pre); continue;
+    }
+    let m = isItem(l);
+    if (m) {
+      const list = document.createElement(/\d/.test(l.trim()[0]) ? "ol" : "ul");
+      while (i < lines.length) {
+        const it = isItem(lines[i]);
+        if (it) {
+          const li = document.createElement("li");
+          li.append(mdInline(it[1]));
+          list.append(li); i++;
+        } else if (lines[i].match(/^\s+\S/) && list.lastChild) {
+          // hanging indent: continuation of the previous item
+          list.lastChild.append(" ", mdInline(lines[i].trim())); i++;
+        } else break;
+      }
+      container.append(list); continue;
+    }
+    m = isHead(l);
+    if (m) {
+      const h = document.createElement("div");
+      h.className = "mdh";
+      h.append(mdInline(m[1]));
+      container.append(h); i++; continue;
+    }
+    const buf = [];
+    while (i < lines.length && lines[i].trim() && !lines[i].startsWith("```")
+           && !isItem(lines[i]) && !isHead(lines[i])) buf.push(lines[i++]);
+    const p = document.createElement("p");
+    p.append(mdInline(buf.join("\n")));
+    container.append(p);
+  }
+}
+let lastChat = null;
 async function pollVisit() {
   if (!visiting || visitMode !== "chat") return;
   const d = await fetch(`/api/task/${visiting}/messages`).then(r=>r.json());
   const el = $("#tdTerm");
-  if (d.error) { el.textContent = d.error; return; }
+  if (d.error) { el.textContent = d.error; lastChat = null; return; }
+  const cache = visiting + JSON.stringify(d);
+  if (cache === lastChat) return;  // unchanged: keep scroll + selection
+  lastChat = cache;
   const msgs = d.messages || [];
   const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-  const banner = d.archived_at
-    ? `— archived transcript from ${new Date(d.archived_at*1000).toLocaleString()} (session not reachable; Resume/Start to go live) —\n\n` : "";
   const squeeze = (s) => (s||"").replace(/[ \t]+$/gm,"").replace(/\n{3,}/g,"\n\n").trim();
-  const body = msgs.map(m =>
-    (m.role === "user" ? "──── you / fold ────\n" : "──── agent ────\n")
-    + squeeze(m.message || m.content)).join("\n\n") || "no output yet";
-  el.textContent = banner + body;
+  el.replaceChildren();
+  if (d.archived_at) {
+    const b = document.createElement("div");
+    b.className = "mdrole";
+    b.textContent = `— archived transcript from ${new Date(d.archived_at*1000).toLocaleString()} (session not reachable; Resume/Start to go live) —`;
+    el.append(b);
+  }
+  for (const m of msgs) {
+    const h = document.createElement("div");
+    h.className = "mdrole";
+    h.textContent = m.role === "user" ? "──── you / fold ────" : "──── agent ────";
+    el.append(h);
+    mdRender(el, squeeze(m.message || m.content));
+  }
+  if (!msgs.length) el.textContent = "no output yet";
   if (stick) el.scrollTop = el.scrollHeight;
 }
 function openTask(ws, name, st) {
