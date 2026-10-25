@@ -131,7 +131,7 @@
   .msgrow textarea { flex:1; width:auto; font:inherit; font-size:.8rem;
     background:var(--raised); color:var(--ink); border:1px solid var(--line);
     border-radius:6px; padding:.45em .6em; margin-bottom:0;
-    min-height:2.6em; max-height:10em; overflow-y:auto; resize:vertical; }
+    min-height:2.6em; max-height:45vh; overflow-y:auto; resize:vertical; }
   #toast { position:fixed; bottom:1rem; left:50%; transform:translateX(-50%);
            background:var(--ink); color:var(--bg); padding:.5em 1em; border-radius:8px;
            font-size:.78rem; opacity:0; transition:opacity .2s; max-width:80vw; }
@@ -208,10 +208,11 @@
     </div>
     <div class="term" id="tdTerm">connecting…</div>
     <div class="msgrow">
-      <textarea id="tdMsg" rows="2" placeholder="Message the agent (Enter sends · Shift+Enter for a newline)…"></textarea>
+      <textarea id="tdMsg" rows="4" placeholder="Message the agent…"></textarea>
       <button id="tdSend" type="button">Send</button>
     </div>
     <div class="drow" style="margin-top:.6rem;">
+      <span class="m" id="tdMsgHint" style="margin-right:auto; align-self:center;">Enter sends · Shift+Enter for a newline</span>
       <button class="quiet" id="tdPause" type="button">Pause</button>
       <button class="quiet" id="tdStop" type="button">Stop</button>
       <button class="quiet" id="tdClose" type="button">Close</button>
@@ -360,6 +361,7 @@ function setVisitMode(mode) {
   // Screen mode IS the input surface — the chat box would be a second,
   // confusing way to talk; it belongs to the Conversation view.
   $(".msgrow").hidden = visitingIsBW || mode === "screen";
+  $("#tdMsgHint").hidden = $(".msgrow").hidden;
   if (mode === "screen" && visiting) {
     $("#tdTerm").textContent = "connecting to live screen…";
     $("#tdTerm").tabIndex = 0;
@@ -568,13 +570,23 @@ function tryDeepLink() {
            t ? (t.frozen ? "frozen" : t.ws_status) : "");
 }
 $("#tdClose").onclick = closeTask;
-// Backdrop click dismisses the Visit view — it holds no unsaved state
-// (reopening reconnects). The dispatch/projects dialogs keep their
-// explicit buttons: a stray click must not eat a half-written prompt.
+// Backdrop click dismisses the Visit view — drafts persist, reopening
+// reconnects. The dispatch/projects dialogs keep their explicit
+// buttons: a stray click must not eat a half-written prompt. Dismissal
+// requires the press to have STARTED outside too: releasing a textarea
+// resize-drag (or a text selection) past the dialog's edge is not a
+// backdrop click.
+let pressOutside = false;
+const outsideDlg = (e) => {
+  const r = $("#taskdlg").getBoundingClientRect();
+  return e.clientX < r.left || e.clientX > r.right ||
+         e.clientY < r.top || e.clientY > r.bottom;
+};
+$("#taskdlg").addEventListener("pointerdown", (e) => {
+  pressOutside = outsideDlg(e);
+});
 $("#taskdlg").addEventListener("click", (e) => {
-  const r = e.currentTarget.getBoundingClientRect();
-  if (e.clientX < r.left || e.clientX > r.right ||
-      e.clientY < r.top || e.clientY > r.bottom) closeTask();
+  if (pressOutside && outsideDlg(e)) closeTask();
 });
 $("#taskdlg").addEventListener("close", () => {
   visiting=null; clearInterval(visitTimer);
@@ -616,6 +628,18 @@ $("#tdMsg").addEventListener("keydown", (e) => {
   // key from reaching anything else in the dialog.
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#tdSend").click(); }
 });
+// The box's dragged height is a preference, not a draft: remember it.
+const MSGH_KEY = "fold-visit-msgh";
+try {
+  const h = +localStorage.getItem(MSGH_KEY);
+  if (h > 40) $("#tdMsg").style.height = h + "px";
+} catch (e) {}
+new ResizeObserver(() => {
+  const h = $("#tdMsg").offsetHeight;
+  if ($("#taskdlg").open && !$(".msgrow").hidden && h > 40) {
+    try { localStorage.setItem(MSGH_KEY, String(h)); } catch (e) {}
+  }
+}).observe($("#tdMsg"));
 async function resolveHand(id) {
   await api("/api/resolve", {method:"POST",
     headers:{"Content-Type":"application/json"}, body: JSON.stringify({id})});
