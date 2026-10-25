@@ -451,7 +451,13 @@ def cmd_repos_list():
 def opencode_config(url, key, model, role_file=None):
     c = {
         "$schema": "https://opencode.ai/config.json",
-        "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow"},
+        # The sandbox is the boundary, not harness dialogs: any TUI
+        # permission prompt silently wedges a sandboxed agent (no human
+        # at the terminal). external_directory gates writes OUTSIDE the
+        # checkout — e.g. the contract's own ~/notes.md — and wedged a
+        # shepherd mid-note before it was allowed here.
+        "permission": {"edit": "allow", "bash": "allow", "webfetch": "allow",
+                       "external_directory": "allow"},
         "provider": {"fold": {
             "npm": "@ai-sdk/openai-compatible", "name": "fold",
             "options": {"baseURL": url, "apiKey": key},
