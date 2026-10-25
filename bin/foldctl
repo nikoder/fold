@@ -272,6 +272,76 @@ def forgejo_api(path, method="GET", body=None, token=None):
         return json.loads(data) if data else {}
 
 
+def seed_repo(path, admin, me):
+    """Seed a repo that lacks the fold contract: AGENTS.md from the
+    template, plus a humble .fold/check + config. Mechanical on
+    purpose — the working agreement is the fold's voice and must be
+    identical in every repo, never agent-improvised; replacing the
+    placeholder check with real verification is the repo's natural
+    FIRST dispatched task. Pushed via a throwaway clone because the
+    contents API cannot set the executable bit .fold/check requires."""
+    import shutil
+    import tempfile
+    forge = require("FOLD_FORGEJO", "repo seeding")
+    netloc = urllib.parse.urlparse(forge).netloc
+    tpl = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "contract", "AGENTS.template.md")
+    seeds = {
+        "AGENTS.md": open(tpl).read(),
+        ".fold/check": ("#!/bin/sh -e\n"
+                        "# Seed placeholder: replace with this project's"
+                        " real verification.\n"
+                        "# Contract: executable, exit 0 = the branch"
+                        " passes. Keep it honest.\n"
+                        "echo \"no project checks yet — .fold/check is a"
+                        " seed placeholder\"\n"),
+        ".fold/config": ("# Check container for bellwether (KEY=VALUE;"
+                         " see the fold README).\n"
+                         "packages=git python3\n"
+                         "timeout=300\n"),
+    }
+    d = tempfile.mkdtemp(prefix="fold-seed-")
+    try:
+        url = f"https://{me}:{admin}@{netloc}/{path}.git"
+        r = subprocess.run(["git", "clone", "--depth", "1", url, d],
+                           capture_output=True, text=True)
+        if r.returncode:
+            print(f"seed: clone failed ({r.stderr.strip().splitlines()[-1]})")
+            return
+        wrote = []
+        for rel, content in seeds.items():
+            dst = os.path.join(d, rel)
+            if os.path.exists(dst):
+                continue
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            open(dst, "w").write(content)
+            if rel.endswith("check"):
+                os.chmod(dst, 0o755)
+            wrote.append(rel)
+        if not wrote:
+            print("seed: contract already present")
+            return
+        env = dict(os.environ,
+                   GIT_AUTHOR_NAME="fold", GIT_COMMITTER_NAME="fold",
+                   GIT_AUTHOR_EMAIL="fold@fold.invalid",
+                   GIT_COMMITTER_EMAIL="fold@fold.invalid")
+        for cmd in (["git", "add", "-A"],
+                    ["git", "commit", "-m",
+                     "Seed the fold working agreement\n\nAGENTS.md is "
+                     "the standard contract; .fold/check is a humble "
+                     "placeholder — replacing it with real verification "
+                     "is this repo's natural first task."],
+                    ["git", "push", "origin"]):
+            r = subprocess.run(cmd, cwd=d, env=env,
+                               capture_output=True, text=True)
+            if r.returncode:
+                print(f"seed: {cmd[1]} failed: {r.stderr.strip()[-200:]}")
+                return
+        print(f"seeded: {', '.join(wrote)}")
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def cmd_repos_add(args):
     path, create, review, name, default = (args.path, args.create,
                                            args.review, args.name,
@@ -279,17 +349,17 @@ def cmd_repos_add(args):
     if not path or "/" not in path:
         sys.exit("usage: foldctl repos add <owner/name> [--create] "
                  "[--name <project>] [--review bellwether|human] "
-                 "[--default]")
+                 "[--default] [--seed]")
     admin = cred("FOLD_SETUP_TOKEN")
     if not admin:
         sys.exit("FOLD_SETUP_TOKEN missing from creds file")
     rname = path.rsplit("/", 1)[-1]
+    me = forgejo_api("/user", token=admin).get("login", "")
     if create:
         # /user/repos creates under the TOKEN's account regardless of
         # the owner typed — creating elsewhere would register a path
         # that doesn't match what was made. Ownership enforcement IS
         # the token's privileges; this check just makes it legible.
-        me = forgejo_api("/user", token=admin).get("login", "")
         owner = path.split("/", 1)[0]
         if owner != me:
             sys.exit(f"--create makes repos under the forge token's "
@@ -300,20 +370,30 @@ def cmd_repos_add(args):
                     {"name": rname, "private": True, "auto_init": True,
                      "default_branch": "master"}, admin)
         print(f"created {path}")
+    # Seed BEFORE protection: the seed is a direct push to the default
+    # branch. Auto on create (a fresh repo always lacks the contract);
+    # --seed for registering an existing bare repo.
+    if create or args.seed:
+        seed_repo(path, admin, me)
     login = conf("FOLD_AUTHOR_LOGIN", "fold-alpha")
     for collab in (login, "bellwether"):
         forgejo_api(f"/repos/{path}/collaborators/{collab}", "PUT",
                     {"permission": "write"}, admin)
     print(f"collaborators: {login}, bellwether (write)")
-    # Merge policy lives in the forge: approval required, no direct
-    # pushes. Idempotence: the forge rejects a duplicate rule.
+    # Merge policy lives in the forge: approval required; direct pushes
+    # only for the OWNER (agents must PR; the human can always act —
+    # and re-seeding an existing repo stays possible). Idempotence: the
+    # forge rejects a duplicate rule.
     try:
         forgejo_api(f"/repos/{path}/branch_protections", "POST",
                     {"branch_name": "master", "rule_name": "master",
                      "required_approvals": 1,
                      "block_on_rejected_reviews": True,
-                     "enable_push": False}, admin)
-        print("branch protection: master, 1 approval, no direct push")
+                     "enable_push": True,
+                     "enable_push_whitelist": True,
+                     "push_whitelist_usernames": [me]}, admin)
+        print(f"branch protection: master, 1 approval, "
+              f"direct push only for {me}")
     except urllib.error.HTTPError as e:
         print(f"branch protection not added (HTTP {e.code} — "
               "may already exist)")
@@ -700,6 +780,10 @@ def build_parser():
     padd.add_argument("--review", default="bellwether",
                       help="review policy: bellwether or human")
     padd.add_argument("--name", help="registry project name")
+    padd.add_argument("--seed", action="store_true",
+                      help="seed the fold contract (AGENTS.md + .fold) "
+                           "into an existing bare repo; automatic with "
+                           "--create")
     padd.set_defaults(func=cmd_repos_add)
     pdis = sub.add_parser(
         "dispatch", help="create a task; --repo picks the project "

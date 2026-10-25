@@ -671,6 +671,8 @@ class H(BaseHTTPRequestHandler):
                 args.append("--create")
             if body.get("default"):
                 args.append("--default")
+            if body.get("seed"):
+                args.append("--seed")
             if body.get("review") in ("bellwether", "human"):
                 args += ["--review", body["review"]]
             name = str(body.get("name") or "")[:32]
