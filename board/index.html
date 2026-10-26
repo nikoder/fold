@@ -85,6 +85,9 @@
   .card.shepherd { border-left:4px solid var(--accent); background:
     linear-gradient(to right, color-mix(in srgb, var(--accent) 7%, var(--surface)), var(--surface) 40%); }
   .chip.shepherd { background:var(--done-bg); color:var(--done); border:1px solid var(--done); }
+  /* reviewer sessions wear bellwether's amber: same mind, embodied */
+  .card.reviewer { border-left:4px solid var(--attn); }
+  .chip.reviewer { background:var(--attn-bg); color:var(--attn); border:1px solid var(--attn); }
   .card .t { font-weight:600; line-height:1.3; overflow-wrap:anywhere; }
   .card .m { display:flex; gap:.4rem; flex-wrap:wrap; align-items:center; }
   .card .a { display:flex; gap:.4rem; }
@@ -339,9 +342,10 @@ function taskCard(t, colName) {
   else if (["stopped"].includes(t.ws_status)) acts.push(`<button class="quiet" onclick="act('start','${t.workspace}')">Start</button>`);
   const hand = colName==="Needs you";
   const shep = (t.template||"").includes("shepherd");
-  return `<div class="card clickable${hand?" hand":""}${shep?" shepherd":""}" onclick="cardOpen(event,'${t.workspace}','${t.name}','${t.frozen ? "frozen" : t.ws_status}')">
+  const rev = (t.template||"").includes("reviewer");
+  return `<div class="card clickable${hand?" hand":""}${shep?" shepherd":""}${rev?" reviewer":""}" onclick="cardOpen(event,'${t.workspace}','${t.name}','${t.frozen ? "frozen" : t.ws_status}')">
     <div class="t">${t.prompt || t.name}</div>
-    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.project ? " " + chip("neutral", "⌂ " + t.project) : ""}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}${reviewChip(t.workspace)}</div>
+    <div class="m">${shep ? chip("shepherd","shepherd") + " " : ""}${rev ? chip("reviewer","🔔 reviewer") + " " : ""}${stChip(t)} ${chip("neutral", t.name)}${t.project ? " " + chip("neutral", "⌂ " + t.project) : ""}${t.model ? " " + chip("neutral", t.model.length > 18 ? t.model.slice(0,16)+"…" : t.model) : ""}${t.ctx ? " " + chip("neutral", "ctx " + t.ctx) : ""}${tokChips(t)}${reviewChip(t.workspace)}</div>
     <div class="a">${acts.join("")}</div></div>`;
 }
 

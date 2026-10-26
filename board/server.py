@@ -453,8 +453,10 @@ def _harvest_tokens(ws, tokens, dbpath):
         # cannot replay the WAL — a fresh session's data lives there
         # entirely until opencode checkpoints
         con = sq.connect(dbpath)
-        tin = tout = msgs = peak = last = cread = cwrite = 0
-        for (data,) in con.execute("SELECT data FROM message ORDER BY rowid"):
+        tin = tout = msgs = peak = last = cread = cwrite = last_t = 0
+        for data, tu in con.execute(
+                "SELECT data, time_updated FROM message ORDER BY rowid"):
+            last_t = max(last_t, int((tu or 0) / 1000))
             try:
                 d = json.loads(data)
             except json.JSONDecodeError:
@@ -489,7 +491,7 @@ def _harvest_tokens(ws, tokens, dbpath):
     tokens[ws] = {"input": tin, "output": tout, "msgs": msgs,
                   "peak_ctx": peak, "last_ctx": last,
                   "cache_read": cread, "cache_write": cwrite,
-                  "t": now, "out_per_min": rate}
+                  "t": now, "out_per_min": rate, "last_t": last_t}
 
 
 def archive_transcripts():
@@ -528,6 +530,18 @@ def archive_transcripts():
             if dirty:
                 os.makedirs(STATE_DIR, exist_ok=True)
                 json.dump(tokens, open(TOKENS_FILE, "w"))
+            # Reviewer auto-park (human-approved policy, 2026-10-26):
+            # reviewers rest live and messageable after their verdict —
+            # the conversation about a verdict happens near the verdict
+            # — then park after a day of recorded rest. foldctl
+            # re-verifies db-level quiescence at park time, so a late
+            # conversation mid-flight still blocks the stop.
+            for ws in live:
+                if reg.get(ws, {}).get("flavor") != "reviewer":
+                    continue
+                last_t = (tokens.get(ws) or {}).get("last_t")
+                if last_t and time.time() - last_t > 24 * 3600:
+                    foldctl("stop", ws, "--when-quiet", "60")
         except Exception:
             pass
         time.sleep(30)
