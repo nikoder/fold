@@ -638,7 +638,8 @@ $("#tdSend").onclick = async () => {
   const r = await api(`/api/task/${ws}/message`, {method:"POST",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({content: msg})});
-  if (r.error) { toast(r.error); return; }  // box and draft keep the text
+  // on error OR swallowed-warning the box and draft keep the text
+  if (r.error || r.warning) { toast(r.error || r.warning); return; }
   $("#tdMsg").value = "";
   delete drafts[ws]; saveDrafts();
   lastChat = null;

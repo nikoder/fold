@@ -867,8 +867,25 @@ class H(BaseHTTPRequestHandler):
             content = body.get("content", "").strip()
             if not content:
                 return self._send(400, {"error": "content required"})
-            return self._send(200, agentapi(
-                m.group(1), "/message", {"content": content, "type": "user"}))
+            r = agentapi(m.group(1), "/message",
+                         {"content": content, "type": "user"})
+            if "error" in r:
+                return self._send(200, r)
+            # Delivery is not processing (third occurrence of this
+            # lesson): a session quietly thinking mid-turn reads
+            # "stable" to agentapi's screen heuristic, and a message
+            # typed into a generating TUI vanishes without a trace. A
+            # processed message starts a turn, so verify the flip and
+            # tell the sender the truth either way.
+            for _ in range(4):
+                time.sleep(1)
+                probe = agentapi(m.group(1), "/status")
+                if probe.get("status") == "running":
+                    return self._send(200, r)
+            r["warning"] = ("delivered but the session never started a "
+                            "turn — likely swallowed by a mid-turn TUI; "
+                            "retry when the session is truly at rest")
+            return self._send(200, r)
         self._send(404, {"error": "not found"})
 
     def log_message(self, fmt, *a):
