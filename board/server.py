@@ -323,8 +323,8 @@ def state():
         tokens = {}
     for t in slim:
         t["tok"] = tokens.get(t["workspace"])
-    working = sum(1 for t in slim
-                  if t["ws_status"] == "running" and not t["frozen"])
+    # mirrors dispatch admission: awake sessions, not running instances
+    working = sum(1 for t in slim if t.get("task_state") == "working")
     total_out = sum(v.get("output", 0) for v in tokens.values())
     try:
         eps = json.load(open(os.path.join(STATE_DIR, "endpoints.json")))

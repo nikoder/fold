@@ -325,9 +325,11 @@ function reviewChip(ws) {
   let best = null;
   for (const r of Object.values((lastState || {}).reviews || {}))
     if (r.ws === ws && (!best || r.t > best.t)) best = r;
-  return best
-    ? ` <span class="chip ${best.ok ? "neutral" : "attn"} clickable" title="open this task's review run (PR #${best.pr})" onclick="event.stopPropagation();openTask('bellwether-pr${best.pr}','bellwether · PR #${best.pr}','review')">🔔 PR #${best.pr}</span>`
-    : "";
+  if (!best) return "";
+  let out = ` <span class="chip ${best.ok ? "neutral" : "attn"} clickable" title="open this task's review run (PR #${best.pr})" onclick="event.stopPropagation();openTask('bellwether-pr${best.pr}','bellwether · PR #${best.pr}','review')">🔔 PR #${best.pr}</span>`;
+  if (best.v2_ws)
+    out += ` <span class="chip reviewer clickable" title="open the embodied reviewer's session (PR #${best.pr})" onclick="event.stopPropagation();openTask('${best.v2_ws}','bellwether v2 · PR #${best.pr}','')">🔔 v2</span>`;
+  return out;
 }
 function cardOpen(e, ws, name, st) {
   // the whole card surface opens Visit — but never steal button clicks

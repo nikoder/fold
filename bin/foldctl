@@ -693,9 +693,24 @@ def cmd_dispatch(template, prompt, mem_gib=None, ctx=None,
         sys.exit(f"unknown template {template!r}; "
                  "native templates: agent, shepherd, reviewer")
     # Admission control: inference slots (max working) + RAM headroom.
-    # Frozen instances hold no slot: zero CPU, zero inference.
+    # Frozen instances hold no slot: zero CPU, zero inference. The cap
+    # targets INFERENCE pressure (3-5 concurrent streams measured), so
+    # only awake sessions count toward it: a resting shepherd or
+    # reviewer holds RAM — the separate check below — but no stream. A
+    # woken sleeper can oversubscribe; inference-side queuing degrades
+    # that gracefully, which is the design's answer to overflow.
+    # Unreachable agentapi means booting, which counts as awake.
     nat = native_running()
-    working = sum(1 for st in nat.values() if st == "RUNNING")
+    working = 0
+    for ws, st in nat.items():
+        if st != "RUNNING":
+            continue
+        try:
+            ip = _instance_ip(instance_name(ws))
+            working += 1 if (not ip or _agentapi(
+                ip, "/status", timeout=3)["status"] == "running") else 0
+        except Exception:
+            working += 1
     need = mem_gib or learned_footprint_gib(template) or 2.0
     avail = host_available_gib()
     if working >= MAX_WORKING:
