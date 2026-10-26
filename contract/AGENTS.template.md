@@ -28,6 +28,14 @@ fold-alpha, reviewers like bellwether) unless a section says otherwise.
   `curl -s -X POST "$FORGEJO_URL/api/v1/repos/$FORGEJO_REPO/pulls"
   -H "Authorization: token $FORGEJO_TOKEN" -H "Content-Type: application/json"
   -d '{"base":"master","head":"'"$FOLD_BRANCH"'","title":"...","body":"..."}'`
+- Opening the PR is a handoff: make it one of your turn's final acts and
+  bring the turn to a close (closing note, rest). The fold treats your
+  concluded turn as readiness — if you realize something crucial while
+  concluding, you can still amend, comment, or close the PR and raise a
+  hand; that is why readiness is your conclusion, not the API call. On
+  repos with a machine gate, an approved PR may be merged and your
+  environment parked afterwards — only ever once you are fully at rest,
+  never mid-thought, and review feedback re-wakes you as before.
 - Your PR will be reviewed by bellwether (a reviewer agent with a fresh
   context) and possibly by a human. Requested changes are about the code,
   never about you.

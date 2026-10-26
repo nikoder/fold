@@ -758,8 +758,66 @@ def cmd_start(ws):
     print(f"{ws}: started")
 
 
-def cmd_stop(ws):
+def session_quiescent(ws):
+    """True only when the session is demonstrably at rest.
+
+    agentapi's screen heuristic alone is not evidence: it reads "stable"
+    during quiet thinking AND while a permission dialog has the whole
+    session wedged (both observed, at length). The harness db is the
+    ground truth — a running tool part, a wedged dialog's pending call,
+    or an unanswered user message all mean a mind mid-thought, and a
+    mind mid-thought is never parked.
+    """
+    import sqlite3 as sq
+    import tempfile
+    inst = instance_name(ws)
+    ip = _instance_ip(inst)
+    if ip:
+        try:
+            if _agentapi(ip, "/status")["status"] != "stable":
+                return False
+        except Exception:
+            return False
+    tmp = tempfile.mkdtemp(prefix="fold-quiet-")
+    base = f"{inst}/home/coder/.local/share/opencode/opencode.db"
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            incus("file", "pull", base + suffix,
+                  os.path.join(tmp, "q.db" + suffix), ok_fail=True)
+        con = sq.connect(os.path.join(tmp, "q.db"))
+        running = con.execute(
+            "SELECT count(*) FROM part WHERE "
+            "json_extract(data, '$.state.status') = 'running'"
+        ).fetchone()[0]
+        last_role = (con.execute(
+            "SELECT json_extract(data, '$.role') FROM message "
+            "ORDER BY rowid DESC LIMIT 1").fetchone() or [None])[0]
+        con.close()
+        return running == 0 and last_role == "assistant"
+    except Exception:
+        return False
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def cmd_stop(ws, when_quiet=None):
     # End-of-task lifecycle, not failure handling: home volume persists.
+    if when_quiet is not None:
+        # Auto-park (human-approved policy, 2026-10-26): used by the
+        # machinery after a merge — the handoff is complete, but only a
+        # db-verified quiescent session is parked. A session that never
+        # settles (wedged dialog, long thought) is LEFT RUNNING for a
+        # human: visibility over tidiness.
+        deadline = time.time() + when_quiet
+        while time.time() < deadline:
+            if session_quiescent(ws):
+                break
+            time.sleep(10)
+        else:
+            print(f"{ws}: never quiescent within {when_quiet}s — "
+                  "left running for a human to look at")
+            sys.exit(3)
     rec = record_memstats(ws, registry().get(ws, {}).get("flavor", "agent"))
     incus("stop", f"fold-{ws.lower()}", ok_fail=True)
     peak = f", anon peak {rec['anon_peak_gib']} GiB recorded" if rec else ""
@@ -837,7 +895,15 @@ def build_parser():
                      ("stop", cmd_stop), ("start", cmd_start)):
         p = sub.add_parser(name, help=f"{name} a workspace's incus instance")
         p.add_argument("workspace")
-        p.set_defaults(func=lambda args, fn=fn: fn(args.workspace))
+        if name == "stop":
+            p.add_argument("--when-quiet", type=int, metavar="SECONDS",
+                           help="park only once the session is "
+                           "db-verified quiescent; give up (exit 3) "
+                           "after SECONDS and leave it running")
+            p.set_defaults(func=lambda args: cmd_stop(
+                args.workspace, when_quiet=args.when_quiet))
+        else:
+            p.set_defaults(func=lambda args, fn=fn: fn(args.workspace))
     p = sub.add_parser("repos", help="list registered projects")
     p.set_defaults(func=lambda args: cmd_repos_list())
     rsub = p.add_subparsers(dest="repos_cmd")

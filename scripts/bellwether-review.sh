@@ -400,6 +400,19 @@ print(next((v.get("review", "") for v in reg.values()
     if [ "$MCODE" = "200" ]; then
       MERGED=1
       echo "merged PR #$PR (registry policy: bellwether-gated)"
+      # Auto-park (human-approved policy, 2026-10-26): merged means the
+      # author's handoff is complete, so its environment is parked —
+      # but only once db-verified quiescent (foldctl refuses to ice a
+      # mind mid-thought or one wedged on a dialog, and leaves it
+      # running for a human instead). Backgrounded: the review run
+      # does not wait on the author settling.
+      if [ -n "$AUTHOR_WS" ]; then
+        FOLDCTL="$(cd "$(dirname "$0")/.." && pwd)/bin/foldctl"
+        nohup setsid sh -c \
+          "'$FOLDCTL' stop '$AUTHOR_WS' --when-quiet 600 >> '$STATE/autopark.log' 2>&1" \
+          >/dev/null 2>&1 &
+        echo "auto-park queued for $AUTHOR_WS (when quiescent; see autopark.log)"
+      fi
     else
       echo "auto-merge failed (HTTP $MCODE) — PR stays open for a human" >&2
     fi
