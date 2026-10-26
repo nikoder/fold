@@ -513,6 +513,12 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     author = cred("FOLD_ALPHA_TOKEN")
     forge = require("FOLD_FORGEJO", "dispatch")
     login = conf("FOLD_AUTHOR_LOGIN", "fold-alpha")
+    if flavor == "reviewer":
+        # The reviewer is bellwether embodied: its own forge identity
+        # and token, never the author's — a reviewer that could push
+        # author branches would blur the only line the gate relies on.
+        login = "bellwether"
+        author = cred("BELLWETHER_TOKEN")
     forge_netloc = urllib.parse.urlparse(forge).netloc
     # Author email defaults to the reserved .invalid TLD, NOT the forge
     # host: commit metadata outlives the repo's walls (mirrors, bundles),
@@ -522,8 +528,15 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     # is registry-owned, never read back out of author-written prose (a
     # PR body naming someone else's workspace must not be able to route
     # a doorbell into their session).
-    branch = f"agent/{login}/{name}"
+    branch = None if flavor == "reviewer" else f"agent/{login}/{name}"
     role = ""
+    if flavor == "reviewer":
+        # One review, one fresh context (a design property: judgment
+        # must not accumulate drift, sympathy, or injected instructions
+        # across rounds). The checkout is the subject repo; the role
+        # contract boots as ~/ROLE.md like the shepherd's.
+        role = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                 "..", "contract", "REVIEWER.md")).read()
     if flavor == "shepherd":
         # The shepherd's checkout is its SUBJECT: the project it plans
         # for. Without an explicit project it plans from the fold's own
@@ -549,6 +562,13 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
         "GIT_COMMITTER_NAME": login,
         "GIT_COMMITTER_EMAIL": email,
     }
+    if branch is None:
+        del env["FOLD_BRANCH"]  # reviewers author nothing
+    if flavor == "reviewer":
+        # v2 runs shadow: verdicts post as advisory COMMENT reviews while
+        # the v1 script stays authoritative. Drop this when v2 earns the
+        # gate (the role contract reads the same variable).
+        env["FOLD_REVIEW_SHADOW"] = "1"
     # Deployment-chosen extras, e.g. package-registry funnels: the egress
     # wall stays shut and dependencies arrive through named routes the
     # deployment controls (NPM_CONFIG_REGISTRY, PIP_INDEX_URL, ...).
@@ -669,9 +689,9 @@ def native_running():
 
 def cmd_dispatch(template, prompt, mem_gib=None, ctx=None,
                  llm=None, model=None, repo=None):
-    if template not in ("agent", "shepherd"):
+    if template not in ("agent", "shepherd", "reviewer"):
         sys.exit(f"unknown template {template!r}; "
-                 "native templates: agent, shepherd")
+                 "native templates: agent, shepherd, reviewer")
     # Admission control: inference slots (max working) + RAM headroom.
     # Frozen instances hold no slot: zero CPU, zero inference.
     nat = native_running()
