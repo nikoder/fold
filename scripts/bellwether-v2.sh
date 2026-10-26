@@ -13,7 +13,7 @@ set -euo pipefail
 PROJECT=${1:?usage: bellwether-v2.sh <project> <pr>}
 PR=${2:?usage: bellwether-v2.sh <project> <pr>}
 HERE=$(cd "$(dirname "$0")/.." && pwd)
-exec "$HERE/bin/foldctl" dispatch reviewer --repo "$PROJECT" -- \
+exec "$HERE/bin/foldctl" dispatch reviewer --repo "$PROJECT" \
   "Review PR #$PR of this repository. Your role contract is ~/ROLE.md — \
 it carries the whole method (fetch the PR ref, read the changed tree \
 whole, run ./.fold/check on the PR branch, fetch prior reviews and \
