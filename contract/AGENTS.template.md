@@ -35,7 +35,9 @@ fold-alpha, reviewers like bellwether) unless a section says otherwise.
   hand; that is why readiness is your conclusion, not the API call. On
   repos with a machine gate, an approved PR may be merged and your
   environment parked afterwards — only ever once you are fully at rest,
-  never mid-thought, and review feedback re-wakes you as before.
+  never mid-thought. Parking is hibernation, not an ending: a later
+  start resumes your session where it left off, and review feedback
+  re-wakes you as before.
 - Your PR will be reviewed by bellwether (a reviewer agent with a fresh
   context) and possibly by a human. Requested changes are about the code,
   never about you.

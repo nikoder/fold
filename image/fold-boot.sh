@@ -60,5 +60,18 @@ fi
 cd "$WORKDIR"
 
 ARGS=(server --type opencode --term-width 120 --term-height 40)
+# Stop is hibernation, not an ending: when this home already holds a
+# session, resume it (-c) instead of typing the initial prompt into a
+# fresh one — the restarted agent rebuilds its context from its own
+# transcript and continues the same thread. Only the first boot prompts.
+RESUME=""
+DB="$HOME/.local/share/opencode/opencode.db"
+if [ -f "$DB" ]; then
+  N=$(sqlite3 "$DB" 'SELECT count(*) FROM session;' 2>/dev/null || echo 0)
+  if [ "${N:-0}" -gt 0 ] 2>/dev/null; then RESUME=1; fi
+fi
+if [ -n "$RESUME" ]; then
+  exec agentapi "${ARGS[@]}" -- opencode -c
+fi
 [ -n "$PROMPT" ] && ARGS+=(-I "$PROMPT")
 exec agentapi "${ARGS[@]}" -- opencode

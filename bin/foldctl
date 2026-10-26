@@ -939,6 +939,12 @@ def build_parser():
                 args.workspace, when_quiet=args.when_quiet))
         else:
             p.set_defaults(func=lambda args, fn=fn: fn(args.workspace))
+    p = sub.add_parser("quiet", help="exit 0 iff the session is "
+                       "db-verified quiescent — the shared gate for "
+                       "auto-park, doorbells, and review invocation")
+    p.add_argument("workspace")
+    p.set_defaults(func=lambda args: sys.exit(
+        0 if session_quiescent(args.workspace) else 1))
     p = sub.add_parser("repos", help="list registered projects")
     p.set_defaults(func=lambda args: cmd_repos_list())
     rsub = p.add_subparsers(dest="repos_cmd")

@@ -369,12 +369,28 @@ if [ "$EVENT" = "REQUEST_CHANGES" ] && [ -n "$AUTHOR_WS" ]; then
   BOARD_URL=$(fold_env FOLD_BOARD_URL)
   BOARD_TOKEN=$(grep -oP 'FOLD_BOARD_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env} || true)
   if [ -n "$BOARD_URL" ] && [ -n "$BOARD_TOKEN" ]; then
-    curl -s -m 20 -X POST "$BOARD_URL/api/task/$AUTHOR_WS/message" \
-      -H "Authorization: Bearer $BOARD_TOKEN" -H "Content-Type: application/json" \
-      -d "{\"content\":\"bellwether requested changes on your PR #$PR ($REPO). The PR is the conversation: fetch the reviews and comments via the API, address the points with commits on your branch, reply on the PR, re-run ./.fold/check, and comment when ready for re-review.\"}" \
-      >/dev/null 2>&1 \
-      && echo "doorbell: author session $AUTHOR_WS notified" \
-      || echo "doorbell: could not reach author session $AUTHOR_WS (resting/stopped is fine — the review waits on the PR)" >&2
+    # Quiescence-gated delivery: a note typed into a mid-turn TUI is
+    # swallowed without a trace (measured, repeatedly), so the doorbell
+    # waits for db-verified rest before ringing — backgrounded, with a
+    # deadline; an undeliverable ring is logged, and the PR itself
+    # still carries the review either way.
+    FOLDCTL="$(cd "$(dirname "$0")/.." && pwd)/bin/foldctl"
+    MSGFILE=$(mktemp /tmp/fold-doorbell-XXXXXX)
+    printf '{"content":"bellwether requested changes on your PR #%s (%s). The PR is the conversation: fetch the reviews and comments via the API, address the points with commits on your branch, reply on the PR, re-run ./.fold/check, and comment when ready for re-review."}' \
+      "$PR" "$REPO" > "$MSGFILE"
+    nohup setsid sh -c "
+      for _ in \$(seq 120); do
+        '$FOLDCTL' quiet '$AUTHOR_WS' >/dev/null 2>&1 && break
+        sleep 15
+      done
+      echo \"[\$(date -Is)] doorbell -> $AUTHOR_WS (PR #$PR):\"
+      curl -s -m 30 -X POST '$BOARD_URL/api/task/$AUTHOR_WS/message' \
+        -H 'Authorization: Bearer $BOARD_TOKEN' \
+        -H 'Content-Type: application/json' -d @'$MSGFILE'
+      echo
+      rm -f '$MSGFILE'
+    " >> "$STATE/doorbell.log" 2>&1 &
+    echo "doorbell: queued for $AUTHOR_WS (rings when quiescent; doorbell.log)"
   fi
 fi
 # Policy-gated auto-merge (human-approved capability, 2026-10-26): a
