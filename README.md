@@ -102,6 +102,17 @@ collaborator list. **Before any fold-managed repo accepts outside
 contributors**, add a control-plane-mediated fetch so authors receive
 only reviews by the reviewers of record, not arbitrary PR text.
 
+A second boundary is about the agents themselves: **a harness joins
+the fold only with two adapters in hand** — *quiescence* (the fold
+must be able to tell, from the harness's own ground truth, a session
+at rest from one mid-thought or wedged on a prompt; screen heuristics
+lie in both directions) and *resume* (stopping an environment must be
+hibernation its session survives, not an ending). Auto-park, doorbell
+delivery, and any automatic review invocation all gate on the first;
+the fold's working agreements promise the second. Absent either
+adapter, these mechanisms fail closed for that harness — a harness the
+fold cannot read deserves refusal, not guesswork.
+
 ## What's in the box
 
 | Path | What |
