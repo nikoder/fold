@@ -71,7 +71,11 @@ if [ -f "$DB" ]; then
   if [ "${N:-0}" -gt 0 ] 2>/dev/null; then RESUME=1; fi
 fi
 if [ -n "$RESUME" ]; then
-  exec agentapi "${ARGS[@]}" -- opencode -c
+  # Guarded for retrofits into older instances: an opencode too old for
+  # --continue gets a fresh session rather than a crash-looping boot.
+  if opencode --help 2>&1 | grep -q -- '--continue'; then
+    exec agentapi "${ARGS[@]}" -- opencode -c
+  fi
 fi
 [ -n "$PROMPT" ] && ARGS+=(-I "$PROMPT")
 exec agentapi "${ARGS[@]}" -- opencode

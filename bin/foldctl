@@ -820,9 +820,17 @@ def session_quiescent(ws):
             incus("file", "pull", base + suffix,
                   os.path.join(tmp, "q.db" + suffix), ok_fail=True)
         con = sq.connect(os.path.join(tmp, "q.db"))
+        # Only the NEWEST message's running parts are activity: a tool
+        # part orphaned at 'running' by a crash or a pre-primitive park
+        # is a fossil that would otherwise block rest-detection forever
+        # (observed: a bash part stuck since an old manual stop). A live
+        # wedge — a permission dialog holding a call open — still rides
+        # the newest message and is still caught.
         running = con.execute(
             "SELECT count(*) FROM part WHERE "
-            "json_extract(data, '$.state.status') = 'running'"
+            "json_extract(data, '$.state.status') = 'running' AND "
+            "message_id = (SELECT id FROM message "
+            "ORDER BY rowid DESC LIMIT 1)"
         ).fetchone()[0]
         last_role = (con.execute(
             "SELECT json_extract(data, '$.role') FROM message "
