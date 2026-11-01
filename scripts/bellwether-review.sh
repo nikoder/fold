@@ -155,11 +155,28 @@ incus delete -f "$CTR" 2>/dev/null || true
 # systemd images need ALL THREE of these or boot wedges before DHCP/DNS
 # (no nesting: systemd stuck "initializing"; no setxattr: journald never
 # reports ready — measured here, and the same lesson as build-image.sh).
-# All harmless on alpine.
+# All harmless on alpine. The fold-agent profile puts the check behind
+# the SAME egress wall the authors live behind: a check that fetches
+# the raw internet while authors cannot is a hole in the trust story
+# (and an injection-reachable one — .fold/check is repo-controlled).
 incus launch -q "$IMAGE" "$CTR" \
+  --profile fold-agent \
   -c security.nesting=true \
   -c security.syscalls.intercept.setxattr=true \
   -c security.syscalls.intercept.mknod=true
+# Dependency funnels for the walled box, all deployment-owned: apt
+# mirrors rewritten only when fold.env names them; FOLD_TASK_ENV
+# (e.g. NPM_CONFIG_REGISTRY) rides into every exec below.
+APT_MIRROR=$(fold_env FOLD_APT_MIRROR)
+APT_SECURITY=$(fold_env FOLD_APT_SECURITY)
+ENVARGS=()
+FTE=$(fold_env FOLD_TASK_ENV)
+if [ -n "$FTE" ]; then
+  while IFS= read -r kv; do
+    [ -n "$kv" ] && ENVARGS+=(--env "$kv")
+  done < <(printf '%s' "$FTE" | python3 -c \
+    'import json,sys; [print(f"{k}={v}") for k,v in json.load(sys.stdin).items()]')
+fi
 # Wait for the guest's network, not a fixed nap: alpine boots in ~2s but
 # systemd/cloud-init images take tens of seconds before DNS works.
 NET_OK=""
@@ -174,7 +191,13 @@ HARNESS_FAIL=""
 if [ -z "$NET_OK" ]; then
   CHECK_STATUS="check container networking never came up within 90s (container $CTR kept for inspection)"
   HARNESS_FAIL=1
-elif incus exec "$CTR" -- sh -c "
+elif incus exec "$CTR" "${ENVARGS[@]}" -- sh -c "
+    if [ -n '$APT_MIRROR' ]; then
+      sed -i -e 's|http://deb.debian.org|$APT_MIRROR|g' \
+             -e 's|https://deb.debian.org|$APT_MIRROR|g' \
+             ${APT_SECURITY:+-e 's|https\\?://security.debian.org|$APT_SECURITY|g'} \
+             /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true
+    fi
     if command -v apk >/dev/null; then apk add -q $PKGS >/dev/null 2>&1;
     else apt-get -qq update >/dev/null 2>&1 && apt-get -qq install -y $PKGS >/dev/null 2>&1; fi &&
     git clone -q --depth 1 --branch '$HEADREF' \
@@ -190,7 +213,7 @@ elif incus exec "$CTR" -- sh -c "
     printf '\n' >> "$FILESFILE"
   done
   if incus exec "$CTR" -- test -x /work/.fold/check; then
-    if timeout "$CHECK_TIMEOUT" incus exec "$CTR" -- sh -c 'cd /work && ./.fold/check' > "$CHECKFILE" 2>&1; then
+    if timeout "$CHECK_TIMEOUT" incus exec "$CTR" "${ENVARGS[@]}" -- sh -c 'cd /work && ./.fold/check' > "$CHECKFILE" 2>&1; then
       CHECK_STATUS="checks PASSED:
 $(tail -c 2000 "$CHECKFILE")"
       incus delete -f "$CTR"
