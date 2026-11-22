@@ -81,9 +81,10 @@ incus exec "$B" -- sh -c '
 
 echo "installing fold boot contract…"
 incus file push "$HERE/image/fold-boot.sh" "$B/usr/local/bin/fold-boot.sh"
+incus file push "$HERE/image/fold-wake" "$B/usr/local/bin/fold-wake"
 incus file push "$HERE/image/fold-agent.service" "$B/etc/systemd/system/fold-agent.service"
 incus exec "$B" -- sh -c '
-  chmod +x /usr/local/bin/fold-boot.sh
+  chmod +x /usr/local/bin/fold-boot.sh /usr/local/bin/fold-wake
   systemctl enable fold-agent.service >/dev/null 2>&1
   # bake-time cleanup: no stale machine identity or apt cache in the image
   apt-get -qq clean

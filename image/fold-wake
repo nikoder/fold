@@ -1,0 +1,29 @@
+#!/bin/sh
+# fold-wake — schedule your own wake-up, then REST.
+#
+# Usage: fold-wake SECONDS [NOTE...]
+#
+# Sleeping inside your turn keeps your session busy: no message — human,
+# fold, or the very answer you are waiting for — can reach you (and the
+# fold's own levers can't gently settle a running tool). This helper is
+# the right shape for waiting: it schedules a message to your own
+# session via your local agentapi, so you can END YOUR TURN and rest.
+# The note arrives as an ordinary message at the hour and wakes you;
+# anything queued for you meanwhile is delivered the moment you rest.
+# Delivery retries until it lands in a receivable gap.
+set -eu
+SECS=${1:?usage: fold-wake SECONDS [NOTE...]}
+shift || true
+WAKE_NOTE=${*:-"the interval you requested has elapsed"}
+WAKE_SECS="$SECS" WAKE_NOTE="$WAKE_NOTE" nohup sh -c '
+  sleep "$WAKE_SECS"
+  PAYLOAD=$(printf "[fold-wake] %s" "$WAKE_NOTE" | python3 -c \
+    "import json,sys; print(json.dumps({\"content\": sys.stdin.read(), \"type\": \"user\"}))")
+  for _ in $(seq 240); do
+    curl -s -m 10 -X POST -H "Content-Type: application/json" \
+      -d "$PAYLOAD" http://127.0.0.1:3284/message 2>/dev/null \
+      | grep -q "\"ok\"" && exit 0
+    sleep 15
+  done
+' >/dev/null 2>&1 &
+echo "wake scheduled in ${SECS}s — end your turn and rest; the note arrives as a message."

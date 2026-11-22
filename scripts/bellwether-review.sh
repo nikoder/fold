@@ -433,6 +433,30 @@ print(next((v.get("review", "") for v in reg.values()
             if isinstance(v, dict) and v.get("repo") == sys.argv[2]), ""))' \
     "$STATE/repos.json" "$REPO")
   if [ "$POLICY" = "bellwether" ]; then
+    # Gated paths never auto-merge: workflow files are host-execution
+    # surface (the deploy envelope), so a PR touching them needs a human
+    # even on machine-gated repos. Defaults cover the three workflow
+    # dirs the forge honors; a registry entry's "gated_paths" adds more.
+    GATED=$(grep -oP '^\+\+\+ b/\K.*' "$DIFFFILE" | STATE="$STATE" REPO="$REPO" python3 -c '
+import sys, fnmatch, json, os
+pats = [".forgejo/workflows/*", ".gitea/workflows/*", ".github/workflows/*"]
+try:
+    reg = json.load(open(os.path.join(os.environ["STATE"], "repos.json")))
+    for v in reg.values():
+        if isinstance(v, dict) and v.get("repo") == os.environ["REPO"]:
+            pats += [p.replace("/**", "/*") for p in v.get("gated_paths", [])]
+except Exception:
+    pass
+hits = [f for f in sys.stdin.read().split("\n")
+        if f and any(fnmatch.fnmatch(f, p) for p in pats)]
+print("\n".join(hits[:5]))' 2>/dev/null)
+    if [ -n "$GATED" ]; then
+      echo "auto-merge withheld — PR touches gated paths (human merge required):"
+      printf '%s\n' "$GATED"
+      POLICY="human-gated-paths"
+    fi
+  fi
+  if [ "$POLICY" = "bellwether" ]; then
     MCODE=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST \
       -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
       "$FORGEJO/api/v1/repos/$REPO/pulls/$PR/merge" -d '{"Do":"merge"}')

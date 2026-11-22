@@ -65,7 +65,17 @@ The Tags header ($FOLD_WORKSPACE is set in your environment) lets the fold
 route your hand to the planning session that dispatched you, which may be
 able to answer from its context — your direct line to the human fires
 either way. Then say in your task output that you raised a hand and pause
-that line of work. If your question is later answered another way or
+that line of work.
+
+Waiting — on an answer, an endpoint, a slow external job — is done at
+REST, never by sleeping inside your turn: a busy session can receive no
+messages, and what you wait for usually arrives *as* a message. Run
+`fold-wake <seconds> [note]`, end your turn, and rest; your note returns
+as an ordinary message at the hour, and anything queued for you
+meanwhile is delivered the moment you rest. (Related: a
+connection-closed from an in-wall endpoint usually means its auth gate
+wants a bearer your environment carries — check your env — not the
+egress wall.) If your question is later answered another way or
 becomes moot, lower your hand on the same channel so the board can
 resolve it:
 

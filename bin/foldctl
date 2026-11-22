@@ -405,7 +405,13 @@ def cmd_repos_add(args):
                      "block_on_rejected_reviews": True,
                      "enable_push": True,
                      "enable_push_whitelist": True,
-                     "push_whitelist_usernames": [me]}, admin)
+                     "push_whitelist_usernames": [me],
+                     # workflow files are host-execution surface: frozen
+                     # for everyone (changes = deliberate protection-lift
+                     # by the human); auto-merge also refuses them
+                     "protected_file_patterns":
+                         ".forgejo/workflows/**;.gitea/workflows/**;"
+                         ".github/workflows/**"}, admin)
         print(f"branch protection: master, 1 approval, "
               f"direct push only for {me}")
     except urllib.error.HTTPError as e:
@@ -751,19 +757,64 @@ def _agentapi(ip, path, body=None, timeout=10):
         return json.load(r)
 
 
+def _running_kind(ws):
+    """'tool' | 'generation' | None — what a busy session is busy WITH.
+
+    The distinction matters because the remedies differ (both measured):
+    freezing mid-GENERATION severs the inference stream and the resume
+    spins, so ESC must settle it first; a mid-TOOL session freezes
+    safely (the tool's clock simply pauses) and ESC is useless there —
+    opencode ignores ESC during tool execution entirely.
+    """
+    import sqlite3 as sq
+    import tempfile
+    import shutil
+    inst = instance_name(ws)
+    tmp = tempfile.mkdtemp(prefix="fold-kind-")
+    try:
+        for suffix in ("", "-wal", "-shm"):
+            incus("file", "pull",
+                  f"{inst}/home/coder/.local/share/opencode/opencode.db"
+                  + suffix, os.path.join(tmp, "k.db" + suffix),
+                  ok_fail=True)
+        con = sq.connect(os.path.join(tmp, "k.db"))
+        n = con.execute(
+            "SELECT count(*) FROM part WHERE "
+            "json_extract(data, '$.state.status') = 'running' AND "
+            "message_id = (SELECT id FROM message "
+            "ORDER BY rowid DESC LIMIT 1)").fetchone()[0]
+        con.close()
+        return "tool" if n else "generation"
+    except Exception:
+        return None
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def cmd_pause(ws):
-    """Interrupt, settle, then freeze.
+    """Settle (state-aware), then freeze.
 
     Freezing mid-generation severs the agent's inference stream; on
     resume it spins on the broken connection (learned 2026-09-22 from
-    the first shepherd). So: never ice a mind mid-sentence — send ESC,
-    wait for the agent to come to rest, then freeze.
+    the first shepherd) — so generation is interrupted with ESC first.
+    A mid-TOOL session is the opposite case (learned 2026-11-23 from
+    the sleep-chained phase-2 worker): ESC does nothing to a running
+    tool, and freezing one is harmless — the tool's clock pauses with
+    the container. So: ESC only what ESC can reach.
     """
     inst = instance_name(ws)
     ip = _instance_ip(inst)
     if ip:
         try:
             if _agentapi(ip, "/status")["status"] != "stable":
+                kind = _running_kind(ws)
+                if kind == "tool":
+                    print(f"{ws}: mid-tool — freezing without interrupt "
+                          "(tools survive a freeze; ESC is tool-blind)")
+                    incus("pause", inst)
+                    print(f"{ws}: frozen (RAM preserved; "
+                          f"'foldctl resume {ws}' to continue)")
+                    return
                 print(f"{ws}: agent is mid-generation — interrupting first…")
                 _agentapi(ip, "/message",
                           {"content": "\x1b", "type": "raw"})

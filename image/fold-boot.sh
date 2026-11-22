@@ -71,6 +71,15 @@ if [ -f "$DB" ]; then
   if [ "${N:-0}" -gt 0 ] 2>/dev/null; then RESUME=1; fi
 fi
 if [ -n "$RESUME" ]; then
+  # Hibernation integrity: a tool mid-run when the environment stopped
+  # is dead — but opencode -c restores the UI around its pending record
+  # and never re-dispatches (measured: hours of ghost-spinner limbo).
+  # Complete such orphans with an honest note BEFORE launch, so
+  # stop/start is safe at ANY instant, not only at rest.
+  sqlite3 "$DB" "UPDATE part SET data = json_set(data,
+    '\$.state.status', 'completed',
+    '\$.state.output', '[interrupted by hibernation: this tool call was cut by an environment stop and its output is lost. Reassess from current state before continuing.]')
+    WHERE json_extract(data, '\$.state.status') = 'running';" 2>/dev/null || true
   # Guarded for retrofits into older instances: an opencode too old for
   # --continue gets a fresh session rather than a crash-looping boot.
   if opencode --help 2>&1 | grep -q -- '--continue'; then
