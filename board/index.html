@@ -556,6 +556,13 @@ async function pollVisit() {
     mdRender(el, squeeze(m.message || m.content));
   }
   if (!msgs.length) el.textContent = "no output yet";
+  for (const q of d.queued || []) {
+    const h = document.createElement("div");
+    h.className = "mdrole";
+    h.textContent = "──── queued — delivers when the session can receive ────";
+    el.append(h);
+    mdRender(el, squeeze(q));
+  }
   if (stick) el.scrollTop = el.scrollHeight;
 }
 let visitingIsBW = false;
@@ -644,8 +651,8 @@ $("#tdSend").onclick = async () => {
   const r = await api(`/api/task/${ws}/message`, {method:"POST",
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify({content: msg})});
-  // on error OR swallowed-warning the box and draft keep the text
-  if (r.error || r.warning) { toast(r.error || r.warning); return; }
+  if (r.error) { toast(r.error); return; }  // box and draft keep the text
+  if (r.queued) toast("queued — delivers when the session can receive");
   $("#tdMsg").value = "";
   delete drafts[ws]; saveDrafts();
   lastChat = null;

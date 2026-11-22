@@ -547,6 +547,73 @@ def archive_transcripts():
         time.sleep(30)
 
 
+OUTBOX = os.path.join(STATE_DIR, "outbox.json")
+_outbox_lock = threading.Lock()
+
+
+def _outbox(mutate=None):
+    with _outbox_lock:
+        try:
+            box = json.load(open(OUTBOX))
+        except (FileNotFoundError, json.JSONDecodeError):
+            box = {}
+        if mutate is not None:
+            box = mutate(box) or box
+            os.makedirs(STATE_DIR, exist_ok=True)
+            json.dump(box, open(OUTBOX, "w"), indent=1)
+        return box
+
+
+def enqueue_message(ws, content):
+    def add(box):
+        box.setdefault(ws, []).append(
+            {"content": content, "t": int(time.time()), "tries": 0})
+    _outbox(add)
+
+
+def deliver_outbox():
+    """A refused message queues instead of vanishing: sessions mid-turn
+    (or sleeping IN-turn — observed: an agent chaining nine-minute
+    `sleep` tool calls reads busy for half an hour and starves every
+    courier) accept nothing, so the human's words wait here and a tight
+    3s cadence hunts the brief stable gaps between turns. Delivery uses
+    the same processing-verification as direct sends; stopped sessions
+    simply hold their queue until they are next started."""
+    while True:
+        try:
+            for ws, msgs in list(_outbox().items()):
+                if not msgs:
+                    continue
+                if agentapi(ws, "/status").get("status") != "stable":
+                    continue
+                m = msgs[0]
+                r = agentapi(ws, "/message",
+                             {"content": m["content"], "type": "user"})
+                if "error" in r:
+                    continue
+                delivered = False
+                for _ in range(4):
+                    time.sleep(1)
+                    if agentapi(ws, "/status").get("status") == "running":
+                        delivered = True
+                        break
+                def record(box):
+                    q = box.get(ws) or []
+                    if q and q[0]["t"] == m["t"]:
+                        if delivered:
+                            q.pop(0)
+                        else:
+                            q[0]["tries"] = q[0].get("tries", 0) + 1
+                    if not q:
+                        box.pop(ws, None)
+                _outbox(record)
+                if delivered:
+                    print(f"[outbox] delivered to {ws}", flush=True)
+        except Exception:
+            pass
+        time.sleep(3)
+
+
 def archived_transcript(ws):
     try:
         return json.load(open(os.path.join(TRANSCRIPTS, f"{ws}.json")))
@@ -676,10 +743,12 @@ class H(BaseHTTPRequestHandler):
                 # the db is the full record (file pull works in any
                 # instance state); the agentapi scrape and the archive
                 # are fallbacks, in that order
+                queued = [q["content"] for q in _outbox().get(ws, [])]
                 db = _pull_db(ws, tag="msg")
                 msgs = _db_messages(db) if db else None
                 if msgs is not None:
                     return self._send(200, {"messages": msgs,
+                                            "queued": queued,
                                             "source": "opencode-db"})
                 live = agentapi(ws, "/messages")
                 if "error" not in live:
@@ -884,7 +953,12 @@ class H(BaseHTTPRequestHandler):
             r = agentapi(m.group(1), "/message",
                          {"content": content, "type": "user"})
             if "error" in r:
-                return self._send(200, r)
+                # busy or unreachable: the message queues instead of
+                # bouncing — the outbox thread delivers at the next
+                # stable gap (or next start, for stopped sessions)
+                enqueue_message(m.group(1), content)
+                return self._send(200, {"queued": True,
+                                        "note": r["error"]})
             # Delivery is not processing (third occurrence of this
             # lesson): a session quietly thinking mid-turn reads
             # "stable" to agentapi's screen heuristic, and a message
@@ -896,9 +970,13 @@ class H(BaseHTTPRequestHandler):
                 probe = agentapi(m.group(1), "/status")
                 if probe.get("status") == "running":
                     return self._send(200, r)
-            r["warning"] = ("delivered but the session never started a "
-                            "turn — likely swallowed by a mid-turn TUI; "
-                            "retry when the session is truly at rest")
+            # likely swallowed by a mid-turn TUI: queue a redelivery
+            # (worst case a fast turn makes this a duplicate, which is
+            # visible and cheap; a lost message is neither)
+            enqueue_message(m.group(1), content)
+            r["queued"] = True
+            r["note"] = ("delivered but the session never started a turn "
+                         "— queued for redelivery at the next stable gap")
             return self._send(200, r)
         self._send(404, {"error": "not found"})
 
@@ -913,5 +991,6 @@ if __name__ == "__main__":
     bind = os.environ.get("FOLD_BOARD_BIND", "127.0.0.1")
     port = int(os.environ.get("FOLD_BOARD_PORT", "7070"))
     threading.Thread(target=archive_transcripts, daemon=True).start()
+    threading.Thread(target=deliver_outbox, daemon=True).start()
     print(f"fold board on http://{bind}:{port}")
     ThreadingHTTPServer((bind, port), H).serve_forever()
