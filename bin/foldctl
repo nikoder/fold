@@ -570,11 +570,11 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     }
     if branch is None:
         del env["FOLD_BRANCH"]  # reviewers author nothing
-    if flavor == "reviewer":
-        # v2 runs shadow: verdicts post as advisory COMMENT reviews while
-        # the v1 script stays authoritative. Drop this when v2 earns the
-        # gate (the role contract reads the same variable).
-        env["FOLD_REVIEW_SHADOW"] = "1"
+    # Reviewer sessions post REAL verdicts (v2 promoted 2026-11-23 on
+    # consonant shadow evidence): the shadow lane is now the v1 script,
+    # and the merge belongs to scripts/fold-gate — a zero-LLM executor
+    # that needs both lanes' approval. The role contract still honors
+    # FOLD_REVIEW_SHADOW if a future experiment sets it via task env.
     # Deployment-chosen extras, e.g. package-registry funnels: the egress
     # wall stays shut and dependencies arrive through named routes the
     # deployment controls (NPM_CONFIG_REGISTRY, PIP_INDEX_URL, ...).

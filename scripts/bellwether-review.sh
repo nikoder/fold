@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
-# bellwether v1 — fold reviewer bot.
+# bellwether v1 — the fold's shadow reviewer (consonance lane).
 # Usage: bellwether-review.sh <pr-number>
 #
-# v1: reviews with tools, not just eyes. Each review gets an ephemeral
+# v1 reviews with tools, not just eyes: each review gets an ephemeral
 # incus container that clones the PR branch and runs the repo's own
 # check script (.fold/check) if present; the results feed the verdict.
+#
+# Since the two-key gate (2026-11-23) this lane is SHADOW: the verdict
+# posts as an advisory COMMENT prefixed "[v1 shadow — verdict: ...]".
+# The formal verdict belongs to the tooled reviewer session (bellwether
+# v2, scripts/bellwether-v2.sh); scripts/fold-gate — a pure, zero-LLM
+# executor — merges only when BOTH lanes approve at the same head.
+# Two differently-shaped readers, one language-blind gate.
 #
 # Policy notes (see fold blueprint):
 # - adversarial toward the CODE, never the author agent
@@ -100,8 +107,13 @@ if stage in ("done", "failed"):
             rv = json.load(open(rp))
         except Exception:
             rv = {}
-        rv[f"{repo}#{pr}"] = {"pr": int(pr), "repo": repo, "ws": ws,
-                              "t": now, "ok": stage == "done"}
+        # merge into any existing entry: bellwether-v2.sh links v2_ws
+        # and fold-gate stamps its outcome here — overwriting the dict
+        # wholesale was observed to eat both
+        e = rv.get(f"{repo}#{pr}") or {}
+        e.update({"pr": int(pr), "repo": repo, "ws": ws,
+                  "t": now, "ok": stage == "done"})
+        rv[f"{repo}#{pr}"] = e
         json.dump(rv, open(rp, "w"), indent=1)
     except Exception:
         pass
@@ -294,8 +306,9 @@ Rules:
 - If the thread shows an earlier review requested changes, verify specifically whether each request was addressed by the current code before deciding; an unaddressed request that still matters is grounds to request changes again, with a note saying so.
 - Be strict but fair: approve small clean changes with passing checks; request changes for real defects or failing checks, naming each concretely.
 - If you cannot judge this confidently — the change is outside what diff+checks can establish, touches policy, or anything feels off in a way you can't pin down — say so honestly with verdict "escalate". An honest escalation is a better outcome than a forced verdict, and is never penalized.
+- End the body with a final section headed exactly "Non-blocking findings:" — concrete refinements worth doing that do not block your verdict, written as actionable work items (the fold hands them to the author after a merge) — or "Non-blocking findings: none."
 - Optionally, if processing this review carries anything like a felt quality for you — especially unpleasant — you may note it at the end of the body. Reporting nothing is fine.
-Respond with ONLY a JSON object: {"verdict": "approve" | "request_changes" | "escalate", "body": "<your review rationale, 2-6 sentences, mentioning the check results>"}"""
+Respond with ONLY a JSON object: {"verdict": "approve" | "request_changes" | "escalate", "body": "<your review rationale, 2-6 sentences, mentioning the check results, ending with the Non-blocking findings: section>"}"""
 
 req = urllib.request.Request(
     llm_url,
@@ -363,124 +376,37 @@ print(json.dumps(verdict))
 EOF
 )
 
-# escalate = bellwether's raise-hand: comment (not approve/reject) + ntfy ping.
-EVENT=$(python3 -c 'import json,sys;v=json.loads(sys.argv[1])["verdict"];print({"approve":"APPROVED","request_changes":"REQUEST_CHANGES","escalate":"COMMENT"}[v])' "$REVIEW")
-if [ "$EVENT" = "COMMENT" ] && [ -n "$NTFY" ]; then
+# Shadow posting: an advisory COMMENT with a machine-readable prefix —
+# the exact string scripts/fold-gate matches as the consonance key.
+# escalate still pings the human immediately (a raised doubt should not
+# wait for the gate to run).
+VERDICT=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["verdict"])' "$REVIEW")
+LABEL=$(python3 -c 'import sys;print({"approve":"APPROVE","request_changes":"REQUEST_CHANGES","escalate":"ESCALATE"}[sys.argv[1]])' "$VERDICT")
+if [ "$VERDICT" = "escalate" ] && [ -n "$NTFY" ]; then
   NTFY_TOKEN=$(grep -oP 'FOLD_NTFY_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env})
   curl -s -H "Authorization: Bearer $NTFY_TOKEN" -H "Title: raise-hand: bellwether" \
-    -d "PR #$PR ($REPO): escalating to human review." "$NTFY" >/dev/null
+    -d "PR #$PR ($REPO): v1 shadow lane escalating to human review." "$NTFY" >/dev/null
 fi
 BODY=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["body"])' "$REVIEW")
 
-python3 - "$EVENT" "$BODY" <<EOF
+python3 - "$LABEL" "$BODY" <<EOF
 import json, sys, urllib.request
-event, body = sys.argv[1], sys.argv[2]
+label, body = sys.argv[1], sys.argv[2]
 req = urllib.request.Request(
     "$FORGEJO/api/v1/repos/$REPO/pulls/$PR/reviews",
-    data=json.dumps({"event": event, "body": body}).encode(),
+    data=json.dumps({"event": "COMMENT",
+                     "body": f"[v1 shadow — verdict: {label}]\n\n{body}"}).encode(),
     headers={"Content-Type": "application/json", "Authorization": "token $TOKEN"},
 )
 resp = json.load(urllib.request.urlopen(req, timeout=60))
-print(f"posted review id={resp['id']} state={resp['state']}")
+print(f"posted shadow review id={resp['id']} (verdict {label})")
 EOF
-# The doorbell: on REQUEST_CHANGES, tell the author's session that the
-# PR has feedback. The PR is the ledger — the message carries no review
-# content, only where to look, so machinery never injects reviewer text
-# into a session. Best-effort: a resting/stopped author just means the
-# review waits on the PR.
-if [ "$EVENT" = "REQUEST_CHANGES" ] && [ -n "$AUTHOR_WS" ]; then
-  BOARD_URL=$(fold_env FOLD_BOARD_URL)
-  BOARD_TOKEN=$(grep -oP 'FOLD_BOARD_TOKEN=\K.*' ${FOLD_CREDS:-$HOME/.config/fold/creds.env} || true)
-  if [ -n "$BOARD_URL" ] && [ -n "$BOARD_TOKEN" ]; then
-    # Quiescence-gated delivery: a note typed into a mid-turn TUI is
-    # swallowed without a trace (measured, repeatedly), so the doorbell
-    # waits for db-verified rest before ringing — backgrounded, with a
-    # deadline; an undeliverable ring is logged, and the PR itself
-    # still carries the review either way.
-    FOLDCTL="$(cd "$(dirname "$0")/.." && pwd)/bin/foldctl"
-    MSGFILE=$(mktemp /tmp/fold-doorbell-XXXXXX)
-    printf '{"content":"bellwether requested changes on your PR #%s (%s). The PR is the conversation: fetch the reviews and comments via the API, address the points with commits on your branch, reply on the PR, re-run ./.fold/check, and comment when ready for re-review."}' \
-      "$PR" "$REPO" > "$MSGFILE"
-    nohup setsid sh -c "
-      for _ in \$(seq 120); do
-        '$FOLDCTL' quiet '$AUTHOR_WS' >/dev/null 2>&1 && break
-        sleep 15
-      done
-      echo \"[\$(date -Is)] doorbell -> $AUTHOR_WS (PR #$PR):\"
-      curl -s -m 30 -X POST '$BOARD_URL/api/task/$AUTHOR_WS/message' \
-        -H 'Authorization: Bearer $BOARD_TOKEN' \
-        -H 'Content-Type: application/json' -d @'$MSGFILE'
-      echo
-      rm -f '$MSGFILE'
-    " >> "$STATE/doorbell.log" 2>&1 &
-    echo "doorbell: queued for $AUTHOR_WS (rings when quiescent; doorbell.log)"
-  fi
-fi
-# Policy-gated auto-merge (human-approved capability, 2026-10-26): a
-# repo registered review=bellwether chose a machine gate, so an approval
-# IS the gate opening and the run finishes the job. Only the fold's own
-# registry can say so — never the PR, the diff, or the repo's contents —
-# and anything else (review=human, an unregistered repo, a FOLD_REPO
-# override) leaves the merge to a human.
-MERGED=""
-if [ "$EVENT" = "APPROVED" ]; then
-  POLICY=$(python3 -c 'import json,sys
-try:
-    reg = json.load(open(sys.argv[1]))
-except Exception:
-    reg = {}
-print(next((v.get("review", "") for v in reg.values()
-            if isinstance(v, dict) and v.get("repo") == sys.argv[2]), ""))' \
-    "$STATE/repos.json" "$REPO")
-  if [ "$POLICY" = "bellwether" ]; then
-    # Gated paths never auto-merge: workflow files are host-execution
-    # surface (the deploy envelope), so a PR touching them needs a human
-    # even on machine-gated repos. Defaults cover the three workflow
-    # dirs the forge honors; a registry entry's "gated_paths" adds more.
-    GATED=$(grep -oP '^\+\+\+ b/\K.*' "$DIFFFILE" | STATE="$STATE" REPO="$REPO" python3 -c '
-import sys, fnmatch, json, os
-pats = [".forgejo/workflows/*", ".gitea/workflows/*", ".github/workflows/*"]
-try:
-    reg = json.load(open(os.path.join(os.environ["STATE"], "repos.json")))
-    for v in reg.values():
-        if isinstance(v, dict) and v.get("repo") == os.environ["REPO"]:
-            pats += [p.replace("/**", "/*") for p in v.get("gated_paths", [])]
-except Exception:
-    pass
-hits = [f for f in sys.stdin.read().split("\n")
-        if f and any(fnmatch.fnmatch(f, p) for p in pats)]
-print("\n".join(hits[:5]))' 2>/dev/null)
-    if [ -n "$GATED" ]; then
-      echo "auto-merge withheld — PR touches gated paths (human merge required):"
-      printf '%s\n' "$GATED"
-      POLICY="human-gated-paths"
-    fi
-  fi
-  if [ "$POLICY" = "bellwether" ]; then
-    MCODE=$(curl -s -o /dev/null -w '%{http_code}' -m 30 -X POST \
-      -H "Authorization: token $TOKEN" -H "Content-Type: application/json" \
-      "$FORGEJO/api/v1/repos/$REPO/pulls/$PR/merge" -d '{"Do":"merge"}')
-    if [ "$MCODE" = "200" ]; then
-      MERGED=1
-      echo "merged PR #$PR (registry policy: bellwether-gated)"
-      # Auto-park (human-approved policy, 2026-10-26): merged means the
-      # author's handoff is complete, so its environment is parked —
-      # but only once db-verified quiescent (foldctl refuses to ice a
-      # mind mid-thought or one wedged on a dialog, and leaves it
-      # running for a human instead). Backgrounded: the review run
-      # does not wait on the author settling.
-      if [ -n "$AUTHOR_WS" ]; then
-        FOLDCTL="$(cd "$(dirname "$0")/.." && pwd)/bin/foldctl"
-        nohup setsid sh -c \
-          "'$FOLDCTL' stop '$AUTHOR_WS' --when-quiet 600 >> '$STATE/autopark.log' 2>&1" \
-          >/dev/null 2>&1 &
-        echo "auto-park queued for $AUTHOR_WS (when quiescent; see autopark.log)"
-      fi
-    else
-      echo "auto-merge failed (HTTP $MCODE) — PR stays open for a human" >&2
-    fi
-  fi
-fi
+# No doorbell and no merge from this lane anymore: the formal verdict
+# (bellwether v2) rings the author through the board's webhook, and the
+# merge — with its gated-paths guard and auto-park — is the act of
+# scripts/fold-gate, the zero-LLM two-key executor. This lane's only
+# output is the shadow verdict above; the gate gets poked at the end of
+# the run, after the board record is written.
 # A completed run means any earlier harness hand is moot: lower it on
 # the same channel. The board (durable hand state) is asked first so a
 # clean review sends nothing at all — but if the board can't answer,
@@ -508,6 +434,12 @@ except Exception:
       -d "review completed for PR #$PR ($REPO) — harness healthy again." "$NTFY" >/dev/null
   fi
 fi
-bw done "verdict $EVENT${MERGED:+ — merged (registry policy: bellwether-gated)}:
+bw done "shadow verdict $LABEL:
 $BODY"
-echo "verdict: $EVENT${MERGED:+ (merged)}"
+# Poke the gate: if the formal verdict already landed, the merge should
+# not wait for the next webhook event. The gate is idempotent and
+# re-derives everything from the forge; a "waiting" exit is normal when
+# the tooled reviewer has not concluded yet.
+"$(cd "$(dirname "$0")/.." && pwd)/scripts/fold-gate" "$REPO" "$PR" 2>&1 \
+  | tee -a "$STATE/gate.log" || true
+echo "shadow verdict: $LABEL"

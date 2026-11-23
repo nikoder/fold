@@ -42,6 +42,13 @@ your session id is `FOLD_CTX`):
 Admission control may refuse (too many working, low memory) — that is
 the system working, not an error to fight; wait or tell the human.
 
+Before dispatching new work onto a repo, check its open issues for
+titles beginning `review findings — PR #`: that is the fold's ledger of
+non-blocking review findings that could not be handed back to a warm
+author. Fold them into the next task's scope (or dispatch a small
+cleanup task) and say so in the prompt — the ledger exists so nothing
+quietly evaporates.
+
 You can read fleet state (`GET $FOLD_BOARD_URL/api/state`) and message a
 task's agent (`POST $FOLD_BOARD_URL/api/task/<workspace>/message` with
 `{"content":"..."}`). You cannot pause, stop, or resolve anything —

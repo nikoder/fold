@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
-# bellwether v2 (shadow) — dispatch a tooled reviewer session for a PR.
+# bellwether v2 — dispatch a tooled reviewer session for a PR. This is
+# the fold's FORMAL review since the two-key promotion (2026-11-23).
 #
 # v2 reviews with hands, not just eyes: a full fold environment, the
 # subject repo checked out, the role contract (contract/REVIEWER.md)
 # booted as ~/ROLE.md. One review = one fresh context, by design.
-# Shadow phase: the verdict posts as an advisory COMMENT review while
-# scripts/bellwether-review.sh (v1) remains the authoritative gate; the
-# dispatcher sets FOLD_REVIEW_SHADOW for every reviewer flavor.
+# The session posts the real verdict (APPROVED / REQUEST_CHANGES /
+# escalation); the board's webhook then rings the author on requested
+# changes and pokes scripts/fold-gate otherwise — the gate merges only
+# with this lane's APPROVED plus the v1 shadow lane's consonance
+# (scripts/bellwether-review.sh). Run both lanes per review round.
 #
 # Usage: bellwether-v2.sh <registered-project> <pr-number>
 set -euo pipefail

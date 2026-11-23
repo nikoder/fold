@@ -793,12 +793,16 @@ class H(BaseHTTPRequestHandler):
             up.close()
 
     def _forgejo_hook(self):
-        """Human-review doorbell. The forge POSTs review events here;
-        the HMAC signature is the whole gate (this path never consults
-        the human/agent planes). Only changes-requested reviews by
-        someone other than bellwether ring an author's session — and the
-        routing is registry-owned, exactly like bellwether's doorbell:
-        head branch -> tasks.json, never anything payload-authored."""
+        """Review-event doorbell + gate trigger. The forge POSTs review
+        events here; the HMAC signature is the whole gate (this path
+        never consults the human/agent planes). Changes-requested
+        reviews — a human's or bellwether's formal verdict alike — ring
+        the author's session through the outbox (reliable delivery),
+        with registry-owned routing: head branch -> tasks.json, never
+        anything payload-authored. bellwether's non-rejection events
+        instead poke scripts/fold-gate, the zero-LLM two-key merge
+        executor; the poke carries timing only — the gate re-derives
+        every fact from the forge and the registry."""
         n = int(self.headers.get("Content-Length", 0))
         if n > 1_000_000:
             return self._send(413, {"error": "payload too large"})
@@ -820,14 +824,23 @@ class H(BaseHTTPRequestHandler):
         sender = (body.get("sender") or {}).get("login") or "a reviewer"
         if not event.startswith("pull_request"):
             return self._send(200, {"ok": True, "ignored": event})
-        if sender == "bellwether":
-            # its review script rings its own doorbell
-            return self._send(200, {"ok": True, "ignored": "bellwether"})
+        pr = body.get("pull_request") or {}
+        repo = (body.get("repository") or {}).get("full_name") or ""
+        if sender == "bellwether" and "reject" not in rtype \
+                and "reject" not in event:
+            if repo and pr.get("number"):
+                gate = os.path.join(HERE, "..", "scripts", "fold-gate")
+                with open(os.path.join(STATE_DIR, "gate.log"), "ab") as lg:
+                    subprocess.Popen([gate, repo, str(pr["number"])],
+                                     stdout=lg, stderr=lg,
+                                     start_new_session=True)
+                print(f"[hook] bellwether review on {repo}"
+                      f"#{pr.get('number')} -> gate poked", flush=True)
+                return self._send(200, {"ok": True, "gate": "poked"})
+            return self._send(200, {"ok": True, "ignored": rtype})
         if "reject" not in rtype and "reject" not in event:
             return self._send(200, {"ok": True, "ignored": rtype})
-        pr = body.get("pull_request") or {}
         head = (pr.get("head") or {}).get("ref") or ""
-        repo = (body.get("repository") or {}).get("full_name") or ""
         try:
             reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
         except (FileNotFoundError, json.JSONDecodeError):
@@ -835,21 +848,29 @@ class H(BaseHTTPRequestHandler):
         ws = next((k for k, v in reg.items()
                    if isinstance(v, dict) and v.get("branch") == head), "")
         if not ws:
+            # follow-up convention <assigned-branch>-...: only the
+            # author's own token can have pushed such a branch, so the
+            # prefix is as registry-owned as the exact match
+            pref = [k for k, v in reg.items() if isinstance(v, dict)
+                    and v.get("branch")
+                    and head.startswith(v["branch"] + "-")]
+            ws = pref[0] if len(pref) == 1 else ""
+        if not ws:
             return self._send(200, {"ok": True,
                                     "ignored": "branch not in registry"})
-        r = agentapi(ws, "/message", {
-            "content": f"{sender} requested changes on your PR "
-                       f"#{pr.get('number')} ({repo}). The PR is the "
-                       "conversation: fetch the reviews and comments via "
-                       "the API, address the points with commits on your "
-                       "branch, reply on the PR, re-run ./.fold/check, "
-                       "and comment when ready for re-review.",
-            "type": "user"})
-        delivered = "error" not in r
+        # Outbox, not a raw send: a mid-turn session swallows typed text
+        # without a trace, and a stopped one holds its mail — the
+        # delivery thread verifies processing either way.
+        enqueue_message(ws, (
+            f"{sender} requested changes on your PR "
+            f"#{pr.get('number')} ({repo}). The PR is the "
+            "conversation: fetch the reviews and comments via "
+            "the API, address the points with commits on your "
+            "branch, reply on the PR, re-run ./.fold/check, "
+            "and comment when ready for re-review."))
         print(f"[hook] review by {sender} on {repo}#{pr.get('number')} -> "
-              f"{ws}: {'delivered' if delivered else r.get('error')}",
-              flush=True)
-        return self._send(200, {"ok": True, "delivered": delivered,
+              f"{ws}: queued for verified delivery", flush=True)
+        return self._send(200, {"ok": True, "queued": True,
                                 "workspace": ws})
 
     def do_POST(self):

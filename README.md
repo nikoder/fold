@@ -71,10 +71,15 @@ Three planes over one environment layer:
 - **Git & policy plane** — a Forgejo instance: per-agent accounts,
   branches, PRs as checkpoints, branch protection encoding the merge
   policy (reviewer approval required; humans gate wherever merge means
-  deploy), `scripts/bellwether-review.sh` running each PR's own
-  `.fold/check` in an ephemeral container before a fresh-context LLM
-  verdict: approve / request changes / **escalate** (the reviewer's
-  raise-hand).
+  deploy), and a two-lane review: a tooled reviewer session
+  (`scripts/bellwether-v2.sh`, fresh context per round) posts the
+  formal verdict — approve / request changes / **escalate** (the
+  reviewer's raise-hand) — while `scripts/bellwether-review.sh` runs
+  each PR's own `.fold/check` in an ephemeral container and posts a
+  shadow verdict. On repos that opt into a machine gate,
+  `scripts/fold-gate` — a pure script that reads no language — merges
+  only when both lanes approve at the same head; disagreement goes to
+  the human.
 
 Inference is per-task selectable from an endpoint registry
 (`endpoints.json`) of OpenAI-compatible servers; token usage is
@@ -121,7 +126,9 @@ fold cannot read deserves refusal, not guesswork.
 | `bin/foldctl` | Control plane CLI: dispatch (admission-controlled, learned memory footprints), lifecycle verbs |
 | `board/` | Web UI + server; compose-deployable; all mutations shell out to foldctl |
 | `image/` + `scripts/build-image.sh` | Golden image: boot contract reads per-task config via the incus guest API |
-| `scripts/bellwether-review.sh` | The reviewer: sandboxed checks + fresh-context verdict, posted as a real Forgejo review |
+| `scripts/bellwether-v2.sh` | The reviewer: dispatches a tooled reviewer session that posts the formal verdict |
+| `scripts/bellwether-review.sh` | Shadow lane: sandboxed `.fold/check` + fresh-context verdict, posted as a consonance comment |
+| `scripts/fold-gate` | Two-key merge executor: zero-LLM script; merges only when both review lanes approve |
 | `scripts/egress-report.sh` | Observed-egress summary that writes your future allowlist |
 | `scripts/token-backfill.py` | Harvest token stats from stopped tasks' volumes |
 

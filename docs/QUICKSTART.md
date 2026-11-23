@@ -87,9 +87,12 @@ Portability in the README for what is still assumed.
     bin/foldctl dispatch agent 'Your checkout is the current directory
     (<repo>). Follow AGENTS.md. Task: <only the work itself>.'
 
-Watch it on the board. Review its PR with
-`scripts/bellwether-review.sh <pr-number>`. Merge is yours (or branch
-protection's).
+Watch it on the board. Review its PR with both lanes —
+`scripts/bellwether-v2.sh <project> <pr>` (the tooled reviewer session,
+formal verdict) and `scripts/bellwether-review.sh <pr>` (the sandboxed
+shadow lane). Merge is yours, unless the repo is registered
+`review=bellwether`: then `scripts/fold-gate` merges when both lanes
+approve at the same head, and hands any disagreement to you.
 
 ## The parts you must not skip
 

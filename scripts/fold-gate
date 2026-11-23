@@ -1,0 +1,293 @@
+#!/usr/bin/env python3
+"""fold-gate — the fold's merge executor: a pure script, zero LLM.
+
+The component that turns approval into merge must not be able to read
+instructions, so this script consumes no language — only deterministic
+facts fetched fresh from the forge and the fold's own registry. It
+requires TWO KEYS, from two differently-shaped readers:
+
+  key 1  the latest FORMAL bellwether review on the PR is APPROVED and
+         was made at the PR's current head commit (the tooled reviewer
+         session, scripts/bellwether-v2.sh);
+  key 2  a "[v1 shadow — verdict: APPROVE]" consonance comment by
+         bellwether at the same head (scripts/bellwether-review.sh) —
+         an injection would have to bend both, through an executor
+         that reads neither's prose.
+
+Standing conditions besides the keys: the registry (repos.json) names
+the repo review=bellwether — policy lives in the fold, never in the PR
+— and the diff touches no gated paths (workflow files need a human
+even on machine-gated repos).
+
+Both keys turn -> merge; then park the author once it rests, and if
+the reviews list non-blocking findings, bounce them to the author
+while its context is warm (or to a forge issue if the author session
+is unknown). Keys disagree -> NO merge; both verdicts go to the human
+(ntfy hand) — a conservative failure mode by design. Anything missing
+-> wait; the next review event pokes this script again (it is
+idempotent and derives everything from current forge state).
+
+Usage: fold-gate <registered-project | owner/repo> <pr-number>
+Exit:  0 merged · 2 waiting / human-gated / nothing to do
+       4 disagreement escalated · 1 error
+"""
+import fnmatch
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+
+STATE = os.path.expanduser(
+    os.environ.get("FOLD_STATE_DIR", "~/.local/state/fold"))
+CREDS = os.path.expanduser(
+    os.environ.get("FOLD_CREDS", "~/.config/fold/creds.env"))
+HERE = os.path.dirname(os.path.abspath(__file__))
+SHADOW_RE = re.compile(r"^\[v1 shadow — verdict: (\w+)\]")
+
+
+def fold_env(key):
+    if os.environ.get(key):
+        return os.environ[key]
+    try:
+        for line in open(os.path.join(STATE, "fold.env")):
+            if line.startswith(key + "="):
+                return line.rstrip("\n").split("=", 1)[1]
+    except FileNotFoundError:
+        pass
+    return ""
+
+
+def cred(key):
+    try:
+        m = re.search(rf"^{key}=(.*)$", open(CREDS).read(), re.M)
+        return m.group(1).strip() if m else ""
+    except FileNotFoundError:
+        return ""
+
+
+def state_json(name):
+    try:
+        return json.load(open(os.path.join(STATE, name)))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def log(msg):
+    print(f"[gate {time.strftime('%F %T')}] {msg}", flush=True)
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit("usage: fold-gate <registered-project | owner/repo> "
+                 "<pr-number>")
+    proj, pr_n = sys.argv[1], sys.argv[2]
+    forge = fold_env("FOLD_FORGEJO")
+    token = cred("BELLWETHER_TOKEN")
+    if not forge or not token:
+        sys.exit("fold-gate: need FOLD_FORGEJO (fold.env) and "
+                 "BELLWETHER_TOKEN (creds)")
+
+    def api(path, data=None, raw=False):
+        req = urllib.request.Request(
+            f"{forge}/api/v1/{path}",
+            data=json.dumps(data).encode() if data is not None else None,
+            headers={"Authorization": f"token {token}",
+                     **({"Content-Type": "application/json"}
+                        if data is not None else {})})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            body = r.read()
+            return body.decode() if raw else json.loads(body or "{}")
+
+    # --- registry: the ONLY place merge policy can come from ---
+    reg = state_json("repos.json")
+    entry = reg.get(proj) if isinstance(reg.get(proj), dict) else None
+    if entry is None:
+        entry = next((v for v in reg.values() if isinstance(v, dict)
+                      and v.get("repo") == proj), None)
+    if entry is None:
+        log(f"{proj}: not in the fold's registry — no machine merge")
+        return 2
+    repo = entry["repo"]
+
+    def gate_note(outcome):
+        # audit breadcrumb on the review index; best-effort
+        try:
+            rp = os.path.join(STATE, "reviews.json")
+            rv = json.load(open(rp))
+            e = rv.get(f"{repo}#{pr_n}")
+            if isinstance(e, dict):
+                e["gate"], e["gate_t"] = outcome, int(time.time())
+                json.dump(rv, open(rp, "w"), indent=1)
+        except Exception:
+            pass
+
+    if entry.get("review") != "bellwether":
+        log(f"{repo}#{pr_n}: registry review policy is "
+            f"'{entry.get('review')}' — merge belongs to a human")
+        return 2
+
+    pr = api(f"repos/{repo}/pulls/{pr_n}")
+    if pr.get("merged"):
+        log(f"{repo}#{pr_n}: already merged — nothing to do")
+        return 2
+    if pr.get("state") != "open":
+        log(f"{repo}#{pr_n}: state '{pr.get('state')}' — nothing to do")
+        return 2
+    head = (pr.get("head") or {}).get("sha") or ""
+    headref = (pr.get("head") or {}).get("ref") or ""
+
+    # --- the two keys, both pinned to the CURRENT head commit ---
+    revs = api(f"repos/{repo}/pulls/{pr_n}/reviews")
+    bw = [r for r in revs
+          if (r.get("user") or {}).get("login") == "bellwether"
+          and r.get("commit_id") == head]
+    formal = max((r for r in bw
+                  if r.get("state") in ("APPROVED", "REQUEST_CHANGES")),
+                 key=lambda r: r.get("id", 0), default=None)
+    shadow = max((r for r in bw
+                  if SHADOW_RE.match(r.get("body") or "")),
+                 key=lambda r: r.get("id", 0), default=None)
+    if formal is None:
+        log(f"{repo}#{pr_n}: waiting — no formal bellwether verdict at "
+            f"head {head[:10]}")
+        return 2
+    if formal["state"] != "APPROVED":
+        # the author's move; the webhook doorbell already rang
+        log(f"{repo}#{pr_n}: formal verdict is REQUEST_CHANGES — no merge")
+        return 2
+    if shadow is None:
+        log(f"{repo}#{pr_n}: waiting — formal APPROVED but no v1 shadow "
+            f"verdict at head {head[:10]}")
+        return 2
+    sv = SHADOW_RE.match(shadow["body"]).group(1)
+    if sv != "APPROVE":
+        # Disagreement between two differently-shaped readers is exactly
+        # what this gate exists to catch: no merge, human sees both.
+        msg = (f"PR #{pr_n} ({repo}): two-key disagreement — formal "
+               f"bellwether review is APPROVED but the v1 shadow verdict "
+               f"is {sv}. No merge; both verdicts are on the PR.")
+        log(msg)
+        ntfy, ntok = fold_env("FOLD_NTFY"), cred("FOLD_NTFY_TOKEN")
+        if ntfy and ntok:
+            try:
+                urllib.request.urlopen(urllib.request.Request(
+                    ntfy, data=msg.encode(),
+                    headers={"Authorization": f"Bearer {ntok}",
+                             "Title": "raise-hand: fold-gate"}), timeout=15)
+            except Exception as exc:
+                log(f"ntfy hand failed ({exc}) — disagreement stands "
+                    "unmerged either way")
+        gate_note("escalated")
+        return 4
+
+    # --- gated paths: the deploy envelope stays with humans ---
+    diff = api(f"repos/{repo}/pulls/{pr_n}.diff", raw=True)
+    files = re.findall(r"^\+\+\+ b/(.*)$", diff, re.M)
+    pats = [".forgejo/workflows/*", ".gitea/workflows/*",
+            ".github/workflows/*"]
+    pats += [p.replace("/**", "/*") for p in entry.get("gated_paths", [])]
+    hits = [f for f in files if any(fnmatch.fnmatch(f, p) for p in pats)]
+    if hits:
+        log(f"{repo}#{pr_n}: withheld — gated paths need a human merge: "
+            f"{', '.join(hits[:5])}")
+        gate_note("withheld-gated-paths")
+        return 2
+
+    # --- both keys turned: merge ---
+    try:
+        api(f"repos/{repo}/pulls/{pr_n}/merge", data={"Do": "merge"})
+    except urllib.error.HTTPError as exc:
+        log(f"{repo}#{pr_n}: merge refused (HTTP {exc.code}) — PR stays "
+            "open for a human")
+        return 1
+    log(f"{repo}#{pr_n}: MERGED (two keys at {head[:10]}: formal "
+        f"APPROVED + v1 shadow APPROVE)")
+    gate_note("merged")
+
+    # --- author session: registry-owned resolution, never prose.
+    # Exact branch match first; then the follow-up convention
+    # <branch>-… — only the author's own token can have pushed it.
+    tasks = state_json("tasks.json")
+    aws = next((k for k, v in tasks.items() if isinstance(v, dict)
+                and v.get("branch") == headref), "")
+    if not aws:
+        pref = [k for k, v in tasks.items() if isinstance(v, dict)
+                and v.get("branch")
+                and headref.startswith(v["branch"] + "-")]
+        aws = pref[0] if len(pref) == 1 else ""
+
+    # --- non-blocking findings: bounce back while context is warm ---
+    def findings(body):
+        m = re.search(r"non-blocking findings:?\s*(.*)", body or "",
+                      re.I | re.S)
+        if not m:
+            return ""
+        t = m.group(1).strip()
+        return "" if not t or re.match(r"^none\b", t, re.I) else t
+
+    found = [t for t in (findings(formal.get("body")),
+                         findings(shadow.get("body"))) if t]
+    if found and aws:
+        burl, btok = fold_env("FOLD_BOARD_URL"), cred("FOLD_BOARD_TOKEN")
+        content = (
+            f"[fold] Your PR #{pr_n} ({repo}) is merged — the work "
+            "landed. The reviews also list non-blocking findings: fetch "
+            f"them (GET $FORGEJO_URL/api/v1/repos/{repo}/pulls/{pr_n}"
+            "/reviews, the 'Non-blocking findings' sections) and, while "
+            "your context is warm, either address them now — branch "
+            "$FOLD_BRANCH-followup from master, commit, open a new PR — "
+            "or reply on the merged PR explaining why you are not taking "
+            "them. Findings are input, not orders: fixing and declining "
+            "with reasons are both good outcomes. Then rest as usual.")
+        sent = False
+        if burl and btok:
+            try:
+                urllib.request.urlopen(urllib.request.Request(
+                    f"{burl}/api/task/{aws}/message",
+                    data=json.dumps({"content": content}).encode(),
+                    headers={"Authorization": f"Bearer {btok}",
+                             "Content-Type": "application/json"}),
+                    timeout=40)
+                sent = True
+                log(f"{repo}#{pr_n}: findings bounced to {aws} "
+                    "(board delivery; queues if busy)")
+            except Exception as exc:
+                log(f"{repo}#{pr_n}: findings message failed ({exc})")
+        if not sent:
+            found.append("(author session unreachable — recorded here "
+                         "instead)")
+            aws = ""  # fall through to the issue ledger
+    if found and not aws:
+        # Fallback ledger: nothing silently evaporates. One issue, the
+        # findings text included — forge-to-forge stays in one trust
+        # domain (sessions only ever get pointers).
+        try:
+            api(f"repos/{repo}/issues", data={
+                "title": f"review findings — PR #{pr_n}",
+                "body": (f"Non-blocking findings from the reviews of "
+                         f"PR #{pr_n}, recorded because no author "
+                         "session could receive them. Address or close "
+                         "deliberately.\n\n" + "\n\n---\n\n".join(found))})
+            log(f"{repo}#{pr_n}: findings recorded as a forge issue")
+        except Exception as exc:
+            log(f"{repo}#{pr_n}: issue ledger failed ({exc}) — findings "
+                "remain on the PR reviews only")
+
+    # --- auto-park: merged means the handoff is complete, but only a
+    # db-verified resting mind is ever parked; an author busy with the
+    # findings simply outlasts the window and stays running.
+    if aws:
+        foldctl = os.path.join(HERE, "..", "bin", "foldctl")
+        with open(os.path.join(STATE, "autopark.log"), "ab") as lg:
+            subprocess.Popen([foldctl, "stop", aws, "--when-quiet", "600"],
+                             stdout=lg, stderr=lg, start_new_session=True)
+        log(f"{repo}#{pr_n}: auto-park queued for {aws} (when quiescent)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

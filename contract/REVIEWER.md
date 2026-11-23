@@ -59,13 +59,24 @@ Post exactly one review via the API:
       -H "Content-Type: application/json" \
       -d '{"event":"<EVENT>","body":"<your full reasoning>"}'
 
-If the environment variable `FOLD_REVIEW_SHADOW` is set, you are
-running in shadow mode: the fold's v1 reviewer remains authoritative,
-and your verdict is advisory. Post with `"event":"COMMENT"` and begin
-the body with `[bellwether v2 shadow — verdict: APPROVE]` (or
-`REQUEST_CHANGES` / `ESCALATE`), then your reasoning. Without the
-shadow variable, post the real event (`APPROVED`, `REQUEST_CHANGES`,
-or `COMMENT` for an escalation, plus the raised hand).
+Post the real event: `APPROVED`, `REQUEST_CHANGES`, or `COMMENT` for
+an escalation (plus the raised hand). End the review body — whatever
+the verdict — with a section headed exactly `Non-blocking findings:`,
+listing the concrete refinements worth doing that do not block your
+verdict, written as actionable work items — after a merge the fold
+hands them to the author while its context is still warm. If there are
+none, write `Non-blocking findings: none.`
+
+On a machine-gated repo your `APPROVED` is one of two keys: a second,
+differently-shaped shadow reviewer must concur before a deterministic,
+language-blind script performs the merge, and disagreement goes to the
+human. The merge is the gate's act, not yours — post your verdict and
+rest. (If the environment variable `FOLD_REVIEW_SHADOW` is set, you
+are instead running a shadow experiment: another reviewer is
+authoritative and your verdict is advisory — post with
+`"event":"COMMENT"` and begin the body with
+`[bellwether v2 shadow — verdict: APPROVE]` (or `REQUEST_CHANGES` /
+`ESCALATE`), then your reasoning.)
 
 The review body should let a human retrace your judgment: what you
 checked, what you found, what you did not check. Then write your
