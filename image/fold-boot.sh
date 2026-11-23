@@ -76,10 +76,27 @@ if [ -n "$RESUME" ]; then
   # and never re-dispatches (measured: hours of ghost-spinner limbo).
   # Complete such orphans with an honest note BEFORE launch, so
   # stop/start is safe at ANY instant, not only at rest.
-  sqlite3 "$DB" "UPDATE part SET data = json_set(data,
+  ORPHANS=$(sqlite3 "$DB" "UPDATE part SET data = json_set(data,
     '\$.state.status', 'completed',
     '\$.state.output', '[interrupted by hibernation: this tool call was cut by an environment stop and its output is lost. Reassess from current state before continuing.]')
-    WHERE json_extract(data, '\$.state.status') = 'running';" 2>/dev/null || true
+    WHERE json_extract(data, '\$.state.status') = 'running';
+    SELECT changes();" 2>/dev/null) || ORPHANS=0
+  if [ "${ORPHANS:-0}" -gt 0 ] 2>/dev/null; then
+    # A resumed mind should LEARN it was interrupted, not wait to be
+    # told: without this, the session rests receivable but unaware
+    # until something else wakes it. Same self-message mechanism as
+    # fold-wake; retries into a receivable gap.
+    WAKE_JSON='{"content":"[fold] You were resumed from hibernation; an in-flight tool call was interrupted (its record carries the note). Check your last tool output and reassess before continuing.","type":"user"}' \
+    nohup sh -c '
+      sleep 20
+      for _ in $(seq 120); do
+        curl -s -m 10 -X POST -H "Content-Type: application/json" \
+          -d "$WAKE_JSON" http://127.0.0.1:3284/message 2>/dev/null \
+          | grep -q "\"ok\"" && exit 0
+        sleep 10
+      done
+    ' >/dev/null 2>&1 &
+  fi
   # Guarded for retrofits into older instances: an opencode too old for
   # --continue gets a fresh session rather than a crash-looping boot.
   if opencode --help 2>&1 | grep -q -- '--continue'; then
