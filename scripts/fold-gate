@@ -259,6 +259,23 @@ def main():
                     "(board delivery; queues if busy)")
             except Exception as exc:
                 log(f"{repo}#{pr_n}: findings message failed ({exc})")
+        if sent:
+            # A parked author still holds its warm context — hibernation,
+            # not an ending — but a stopped session cannot receive: an
+            # earlier round's park racing this round's bounce stranded
+            # mail in the outbox (observed). Wake it; the outbox delivers
+            # once it rests after boot, and parking is now outbox-aware,
+            # so the queued park below cannot re-strand the message.
+            state = subprocess.run(
+                ["incus", "list", f"fold-{aws.lower()}", "-c", "s",
+                 "-f", "csv"], capture_output=True, text=True
+            ).stdout.strip()
+            if state == "STOPPED":
+                subprocess.run(
+                    [os.path.join(HERE, "..", "bin", "foldctl"),
+                     "start", aws], capture_output=True, text=True)
+                log(f"{repo}#{pr_n}: author {aws} was parked — started "
+                    "it so the findings can be delivered")
         if not sent:
             found.append("(author session unreachable — recorded here "
                          "instead)")

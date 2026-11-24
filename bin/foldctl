@@ -905,7 +905,18 @@ def cmd_stop(ws, when_quiet=None):
         # human: visibility over tidiness.
         deadline = time.time() + when_quiet
         while time.time() < deadline:
-            if session_quiescent(ws):
+            # A session with undelivered fold mail is not done: parking
+            # it strands the message until some later start (observed —
+            # a round-N park raced the round-N+1 findings bounce and
+            # both authors slept through their mail). The outbox is
+            # part of quiescence for PARKING only; doorbells and other
+            # senders still gate on the harness alone.
+            try:
+                mail = json.load(open(os.path.join(
+                    STATE_DIR, "outbox.json"))).get(ws)
+            except (FileNotFoundError, json.JSONDecodeError):
+                mail = None
+            if not mail and session_quiescent(ws):
                 break
             time.sleep(10)
         else:
