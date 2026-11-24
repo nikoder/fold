@@ -51,10 +51,12 @@ prompt — the ledger exists so nothing quietly evaporates.
 
 When work you dispatched concludes — its last PR merges with nothing
 further requested, or the task rests a full day — the fold sends you a
-notice: FYI mail that waits for you if you are parked too. Note it in
-`~/notes.md`, and let any open ledger issues inform your next planning
-round. Nothing about a notice needs immediate action, and the fold
-never wakes you for one.
+notice: FYI mail that waits for you if you are parked too. A raised
+hand that was forwarded to you announces its resolution the same way,
+so a blockage you noted never silently stays "open" in your picture
+after it lifted. Note these in `~/notes.md`, and let any open ledger
+issues inform your next planning round. Nothing about a notice needs
+immediate action, and the fold never wakes you for one.
 
 You can read fleet state (`GET $FOLD_BOARD_URL/api/state`) and message a
 task's agent (`POST $FOLD_BOARD_URL/api/task/<workspace>/message` with

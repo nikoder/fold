@@ -180,6 +180,7 @@ def hands():
                         h["resolved"] = {"by": "agent", "t": m["time"],
                                          "note": m.get("message", "")}
                         dirty = True
+                        _notify_forwarded(h)
         if dirty:
             _save_hands(store)
         if _forward_hands(store):
@@ -217,8 +218,11 @@ def _forward_hands(store):
         if pend:
             if time.time() - pend["t"] < 4:
                 continue
-            probe = agentapi(pend["to"], "/status")
-            if probe.get("status") == "running":
+            # Promotion needs ground truth, not the status flip (the
+            # same keystroke-redraw false positive as every other typed
+            # delivery): the forward counts only once the ctx session's
+            # own db holds the note.
+            if delivered_to_db(pend["to"], pend.get("probe", ""), tries=3):
                 h["forwarded"] = {"to": pend["to"], "t": int(time.time())}
             h.pop("forward_pending", None)
             dirty = True
@@ -246,9 +250,32 @@ def _forward_hands(store):
                 f"open until resolved either way.")
         r = agentapi(session, "/message", {"content": note, "type": "user"})
         if "error" not in r:
-            h["forward_pending"] = {"to": session, "t": int(time.time())}
+            h["forward_pending"] = {"to": session, "t": int(time.time()),
+                                    "probe": note[:80]}
             dirty = True
     return dirty
+
+
+def _notify_forwarded(h):
+    """A forwarded hand's resolution travels the same road back: the
+    ctx session answered (or deferred to the human) and may be resting
+    on the outcome — observed: a shepherd that kept believing phase 2
+    was blocked long after the hand came down. FYI mail, no wake."""
+    fwd = (h.get("forwarded") or {}).get("to")
+    if not fwd:
+        return
+    res = h.get("resolved") or {}
+    note = (res.get("note") or "").strip()
+    enqueue_message(fwd, (
+        f"[fold] The hand you were forwarded from "
+        f"{_agent_of(h.get('title', ''))} (workspace "
+        f"{h.get('workspace', '?')}) has been resolved by "
+        f"{res.get('by', '?')}"
+        + (f": \"{note[:300]}\"" if note else ".")
+        + " FYI — if you were resting on that blockage, it is lifted; "
+          "update your notes as needed."))
+    print(f"[hands] resolution notice -> {fwd} "
+          f"({h.get('workspace')})", flush=True)
 
 
 def resolve_hand(hand_id):
@@ -256,6 +283,7 @@ def resolve_hand(hand_id):
     if hand_id in store and store[hand_id]["resolved"] is None:
         store[hand_id]["resolved"] = {"by": "human", "t": int(time.time())}
         _save_hands(store)
+        _notify_forwarded(store[hand_id])
 
 
 def incus_instances():
@@ -596,6 +624,30 @@ def enqueue_message(ws, content):
     _outbox(add)
 
 
+def delivered_to_db(ws, content, tries=6):
+    """Ground truth for message delivery: the harness db grew a user
+    message carrying this text. The screen-status flip lies in both
+    directions — keystrokes redraw the TUI into 'running' while the
+    typed text can still vanish without a trace (observed: a notice
+    that passed the flip check yet never existed in the db, leaving a
+    shepherd believing phase 2 was still blocked). The db row is
+    written the moment the harness accepts the input, so this is the
+    only check that cannot be fooled by rendering."""
+    probe = content[:80]
+    for _ in range(tries):
+        time.sleep(1)
+        try:
+            db = _pull_db(ws)
+            msgs = (_db_messages(db) if db else None) or []
+            for m in reversed(msgs):
+                if (m.get("role") == "user"
+                        and probe in (m.get("content") or "")):
+                    return True
+        except Exception:
+            pass
+    return False
+
+
 def deliver_outbox():
     """A refused message queues instead of vanishing: sessions mid-turn
     (or sleeping IN-turn — observed: an agent chaining nine-minute
@@ -612,16 +664,19 @@ def deliver_outbox():
                 if agentapi(ws, "/status").get("status") != "stable":
                     continue
                 m = msgs[0]
+                # Genuine-failure backoff: with db-verified delivery a
+                # swallowing TUI now fails honestly instead of
+                # false-passing, so after a burst of quick retries the
+                # cadence drops to five minutes — the queue stays
+                # visible on the board either way.
+                if (m.get("tries", 0) >= 8
+                        and time.time() - m.get("last_try", 0) < 300):
+                    continue
                 r = agentapi(ws, "/message",
                              {"content": m["content"], "type": "user"})
                 if "error" in r:
                     continue
-                delivered = False
-                for _ in range(4):
-                    time.sleep(1)
-                    if agentapi(ws, "/status").get("status") == "running":
-                        delivered = True
-                        break
+                delivered = delivered_to_db(ws, m["content"])
                 def record(box):
                     q = box.get(ws) or []
                     if q and q[0]["t"] == m["t"]:
@@ -629,6 +684,7 @@ def deliver_outbox():
                             q.pop(0)
                         else:
                             q[0]["tries"] = q[0].get("tries", 0) + 1
+                            q[0]["last_try"] = int(time.time())
                     if not q:
                         box.pop(ws, None)
                 _outbox(record)
@@ -1018,22 +1074,20 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"queued": True,
                                         "note": r["error"]})
             # Delivery is not processing (third occurrence of this
-            # lesson): a session quietly thinking mid-turn reads
-            # "stable" to agentapi's screen heuristic, and a message
-            # typed into a generating TUI vanishes without a trace. A
-            # processed message starts a turn, so verify the flip and
-            # tell the sender the truth either way.
-            for _ in range(4):
-                time.sleep(1)
-                probe = agentapi(m.group(1), "/status")
-                if probe.get("status") == "running":
-                    return self._send(200, r)
-            # likely swallowed by a mid-turn TUI: queue a redelivery
-            # (worst case a fast turn makes this a duplicate, which is
-            # visible and cheap; a lost message is neither)
+            # lesson), and the status flip is not delivery either
+            # (fourth: keystrokes redraw a TUI into "running" while the
+            # typed text vanishes — a notice once passed that check yet
+            # never reached the db). Ground truth is the harness db
+            # growing the user message; verify that, and tell the
+            # sender the truth either way.
+            if delivered_to_db(m.group(1), content):
+                return self._send(200, r)
+            # swallowed: queue a redelivery (worst case a slow db pull
+            # makes this a duplicate, which is visible and cheap; a
+            # lost message is neither)
             enqueue_message(m.group(1), content)
             r["queued"] = True
-            r["note"] = ("delivered but the session never started a turn "
+            r["note"] = ("typed, but the session's db never recorded it "
                          "— queued for redelivery at the next stable gap")
             return self._send(200, r)
         self._send(404, {"error": "not found"})
