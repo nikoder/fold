@@ -41,8 +41,12 @@ for attempt in 1 2 3 4 5; do
     # toolchain that matters is the one .fold/check containers also get
     # from apt, so build and verification environments agree. npm still
     # needs a registry at task time — see FOLD_TASK_ENV (registry funnel).
+    # opus-tools: purpose-built WAV->Ogg/Opus (opusenc/opusinfo) for
+    # audio-pipeline tasks — megabytes, apt-signed, vs the ffmpeg codec
+    # soup. poppler-utils: pdftotext/pdftoppm for source-material tasks
+    # (menus arrive as PDFs).
     apt-get -qq install -y curl git jq python3 ca-certificates unzip \
-      sqlite3 nodejs npm >/dev/null
+      sqlite3 nodejs npm opus-tools poppler-utils >/dev/null
   '; then APT_OK=1; break; fi
   echo "apt not ready yet (attempt $attempt), retrying in 10s…"
   sleep 10
