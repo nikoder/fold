@@ -47,6 +47,12 @@ try:
     tasks = json.load(open(os.path.join(state, "tasks.json")))
     aws = next((k for k, v in tasks.items()
                 if v.get("branch") == head), "")
+    if not aws:
+        # follow-up convention <assigned-branch>-...: only the author's
+        # own token can push such a branch (same rule as the gate)
+        pref = [k for k, v in tasks.items() if v.get("branch")
+                and head.startswith(v["branch"] + "-")]
+        aws = pref[0] if len(pref) == 1 else ""
     rp = os.path.join(state, "reviews.json")
     try:
         rv = json.load(open(rp))

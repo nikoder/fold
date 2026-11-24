@@ -71,8 +71,15 @@ try:
     reg = json.load(open(sys.argv[1]))
 except Exception:
     reg = {}
-print(next((k for k, v in reg.items()
-            if isinstance(v, dict) and v.get("branch") == sys.argv[2]), ""))' \
+ws = next((k for k, v in reg.items()
+           if isinstance(v, dict) and v.get("branch") == sys.argv[2]), "")
+if not ws:
+    # follow-up convention <assigned-branch>-... (same rule as the gate)
+    pref = [k for k, v in reg.items() if isinstance(v, dict)
+            and v.get("branch")
+            and sys.argv[2].startswith(v["branch"] + "-")]
+    ws = pref[0] if len(pref) == 1 else ""
+print(ws)' \
   "$STATE/tasks.json" "$HEADREF")
 
 # --- board presence: a run record the board renders as a live card,
