@@ -49,10 +49,12 @@ author, or that an author deliberately deferred. Fold them into the
 next task's scope (or dispatch a small cleanup task) and say so in the
 prompt — the ledger exists so nothing quietly evaporates.
 
-When a task you dispatched concludes and is parked, the fold sends you
-a notice — FYI mail that waits for you if you are parked too. Note it
-in `~/notes.md`, and let any open ledger issues inform your next
-planning round. Nothing about a notice needs immediate action.
+When work you dispatched concludes — its last PR merges with nothing
+further requested, or the task rests a full day — the fold sends you a
+notice: FYI mail that waits for you if you are parked too. Note it in
+`~/notes.md`, and let any open ledger issues inform your next planning
+round. Nothing about a notice needs immediate action, and the fold
+never wakes you for one.
 
 You can read fleet state (`GET $FOLD_BOARD_URL/api/state`) and message a
 task's agent (`POST $FOLD_BOARD_URL/api/task/<workspace>/message` with

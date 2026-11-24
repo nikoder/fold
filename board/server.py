@@ -494,9 +494,6 @@ def _harvest_tokens(ws, tokens, dbpath):
                   "t": now, "out_per_min": rate, "last_t": last_t}
 
 
-_prev_running = None
-
-
 def archive_transcripts():
     """Snapshot every reachable task's agentapi messages every 30s, so
     the transcript survives stop/freeze and Visit works in any state."""
@@ -511,47 +508,10 @@ def archive_transcripts():
                 reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
             except (FileNotFoundError, json.JSONDecodeError):
                 reg = {}
-            instances = incus_instances()
-            running_native = {i["name"][5:] for i in instances
+            running_native = {i["name"][5:] for i in incus_instances()
                               if i["name"].startswith("fold-")
                               and i["status"] == "Running"}
             live = [n for n in reg if n.lower() in running_native]
-            # Conclusion notices (2026-11-24): a task PARKING is the
-            # pipeline's own "this thread concluded" event — merges are
-            # not (chains run several rounds). Tell the session that
-            # dispatched it (ctx), so planning stays aware of finished
-            # work and any ledger issues it left behind. Deliberately
-            # FYI mail with NO wake: nothing is action-required, so a
-            # parked shepherd reads the batch when next started
-            # (doorbells and findings bounces DO wake; this must not).
-            # A deleted instance is not a park; a board restart only
-            # resets the baseline (no false notices).
-            global _prev_running
-            if _prev_running is not None:
-                existing = {i["name"][5:] for i in instances
-                            if i["name"].startswith("fold-")}
-                for ws in reg:
-                    wl = ws.lower()
-                    if (wl in _prev_running
-                            and wl not in running_native
-                            and wl in existing):
-                        meta = reg.get(ws) or {}
-                        ctx = meta.get("ctx") or task_ctx().get(ws)
-                        if ctx and ctx != ws and ctx in reg:
-                            proj = meta.get("project") or "no project"
-                            enqueue_message(ctx, (
-                                f"[fold] Task {ws} ({proj}), dispatched "
-                                "under your context, has concluded and "
-                                "parked at rest. FYI — nothing needs "
-                                "doing now. When you next plan work on "
-                                "this project: its PRs and closing note "
-                                "are on the forge, and sweep the open "
-                                "'review findings — PR #...' ledger "
-                                "issues first, as your contract "
-                                "describes."))
-                            print(f"[archiver] park notice: {ws} -> "
-                                  f"{ctx}", flush=True)
-            _prev_running = set(running_native)
             for ws in live:
                 db = _pull_db(ws)
                 if db:
@@ -581,11 +541,32 @@ def archive_transcripts():
             # still blocks the stop. Parking is hibernation: doorbells
             # and findings bounces wake a parked author.
             for ws in live:
-                if reg.get(ws, {}).get("flavor") == "shepherd":
+                meta = reg.get(ws, {})
+                if meta.get("flavor") == "shepherd":
                     continue
                 last_t = (tokens.get(ws) or {}).get("last_t")
                 if last_t and time.time() - last_t > 24 * 3600:
-                    foldctl("stop", ws, "--when-quiet", "60")
+                    r = foldctl("stop", ws, "--when-quiet", "60")
+                    # Conclusion notice, decline-path half (the gate
+                    # sends the settled half on a no-findings merge):
+                    # "declined with reasons" is prose the machinery
+                    # deliberately never reads, so a day of verified
+                    # rest is its honest conclusion that nothing more
+                    # is coming. FYI mail, no wake — a parked ctx
+                    # session reads it at its next start.
+                    ctx = meta.get("ctx")
+                    if r.get("ok") and ctx and ctx != ws and ctx in reg:
+                        enqueue_message(ctx, (
+                            f"[fold] Task {ws} "
+                            f"({meta.get('project') or 'no project'}), "
+                            "dispatched under your context, rested a "
+                            "full day and has been parked — its thread "
+                            "is concluded. FYI, nothing needs doing "
+                            "now: its closing note, PRs and any "
+                            "'review findings' ledger issues are on "
+                            "the forge for your next planning round."))
+                        print(f"[archiver] conclusion notice (idle "
+                              f"park): {ws} -> {ctx}", flush=True)
         except Exception:
             pass
         time.sleep(30)

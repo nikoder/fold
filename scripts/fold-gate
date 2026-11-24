@@ -233,9 +233,28 @@ def main():
 
     found = [t for t in (findings(formal.get("body")),
                          findings(shadow.get("body"))) if t]
+    burl, btok = fold_env("FOLD_BOARD_URL"), cred("FOLD_BOARD_TOKEN")
+
+    def board_msg(target, content):
+        # Bounce and FYI mail alike ride the board's verified/queued
+        # delivery; only the findings bounce also wakes (below).
+        if not (burl and btok):
+            return False
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                f"{burl}/api/task/{target}/message",
+                data=json.dumps({"content": content}).encode(),
+                headers={"Authorization": f"Bearer {btok}",
+                         "Content-Type": "application/json"}),
+                timeout=40)
+            return True
+        except Exception as exc:
+            log(f"{repo}#{pr_n}: board message to {target} failed "
+                f"({exc})")
+            return False
+
     if found and aws:
-        burl, btok = fold_env("FOLD_BOARD_URL"), cred("FOLD_BOARD_TOKEN")
-        content = (
+        sent = board_msg(aws, (
             f"[fold] Your PR #{pr_n} ({repo}) is merged — the work "
             "landed. The reviews also list non-blocking findings: fetch "
             f"them (GET $FORGEJO_URL/api/v1/repos/{repo}/pulls/{pr_n}"
@@ -244,22 +263,10 @@ def main():
             "$FOLD_BRANCH-followup from master, commit, open a new PR — "
             "or reply on the merged PR explaining why you are not taking "
             "them. Findings are input, not orders: fixing and declining "
-            "with reasons are both good outcomes. Then rest as usual.")
-        sent = False
-        if burl and btok:
-            try:
-                urllib.request.urlopen(urllib.request.Request(
-                    f"{burl}/api/task/{aws}/message",
-                    data=json.dumps({"content": content}).encode(),
-                    headers={"Authorization": f"Bearer {btok}",
-                             "Content-Type": "application/json"}),
-                    timeout=40)
-                sent = True
-                log(f"{repo}#{pr_n}: findings bounced to {aws} "
-                    "(board delivery; queues if busy)")
-            except Exception as exc:
-                log(f"{repo}#{pr_n}: findings message failed ({exc})")
+            "with reasons are both good outcomes. Then rest as usual."))
         if sent:
+            log(f"{repo}#{pr_n}: findings bounced to {aws} "
+                "(board delivery; queues if busy)")
             # A parked author still holds its warm context — hibernation,
             # not an ending — but a stopped session cannot receive: an
             # earlier round's park racing this round's bounce stranded
@@ -295,6 +302,25 @@ def main():
         except Exception as exc:
             log(f"{repo}#{pr_n}: issue ledger failed ({exc}) — findings "
                 "remain on the PR reviews only")
+
+    # Conclusion notice, settled half: a merge with NOTHING to bounce is
+    # the chain's deterministic end — "the last PR merged with no
+    # further changes requested" just became a fact, so the session that
+    # dispatched the author hears it now, not at park time. FYI mail, no
+    # wake. (The decline path ends in prose the machinery deliberately
+    # never reads; the day-of-rest sweep sends that notice instead.)
+    if not found and aws:
+        ctx = (tasks.get(aws) or {}).get("ctx")
+        if ctx and ctx != aws:
+            if board_msg(ctx, (
+                    f"[fold] The work you dispatched as {aws} ({repo}) "
+                    f"has settled: PR #{pr_n} merged with no "
+                    "outstanding findings — the review chain is "
+                    "complete and the author is being parked at rest. "
+                    "FYI, nothing needs doing now: closing notes, PRs "
+                    "and any 'review findings' ledger issues are on "
+                    "the forge for your next planning round.")):
+                log(f"{repo}#{pr_n}: settled notice -> {ctx}")
 
     # --- auto-park: merged means the handoff is complete, but only a
     # db-verified resting mind is ever parked; an author busy with the
