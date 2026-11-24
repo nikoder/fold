@@ -64,8 +64,12 @@ an escalation (plus the raised hand). End the review body — whatever
 the verdict — with a section headed exactly `Non-blocking findings:`,
 listing the concrete refinements worth doing that do not block your
 verdict, written as actionable work items — after a merge the fold
-hands them to the author while its context is still warm. If there are
-none, write `Non-blocking findings: none.`
+hands them to the author while its context is still warm. List only
+findings worth that round-trip: a concrete defect or improvement worth
+an author's fresh commit. Advice scoped to the future ("when this is
+next edited"), taste-level polish, and observations belong in your
+review prose, not this section — prefer `none.` over scraping. If
+there are none, write `Non-blocking findings: none.`
 
 On a machine-gated repo your `APPROVED` is one of two keys: a second,
 differently-shaped shadow reviewer must concur before a deterministic,

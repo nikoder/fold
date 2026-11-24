@@ -222,8 +222,10 @@ def main():
 
     # --- non-blocking findings: bounce back while context is warm ---
     def findings(body):
-        m = re.search(r"non-blocking findings:?\s*(.*)", body or "",
-                      re.I | re.S)
+        # line-anchored: reviews may MENTION the findings convention in
+        # prose before the actual section heading (observed, round 2)
+        m = re.search(r"^\s*(?:\*\*)?non-blocking findings:?(?:\*\*)?"
+                      r"\s*(.*)", body or "", re.I | re.S | re.M)
         if not m:
             return ""
         t = m.group(1).strip()

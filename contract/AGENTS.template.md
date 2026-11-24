@@ -54,7 +54,10 @@ fold-alpha, reviewers like bellwether) unless a section says otherwise.
   is warm, either address them — branch `$FOLD_BRANCH-followup` from
   master and open a new PR — or reply on the merged PR explaining why
   you are not taking them. Findings are input, not orders: declining
-  with reasons is a legitimate outcome; silence is not.
+  with reasons is a legitimate outcome; silence is not. If you agree
+  with a finding but defer it (right fix, wrong time), also record it
+  as a forge issue titled `review findings — PR #<n>` so planning sees
+  it after you are parked.
 
 ## Raising a hand (every agent kind)
 
