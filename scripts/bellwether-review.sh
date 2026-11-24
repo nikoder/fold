@@ -446,7 +446,8 @@ $BODY"
 # Poke the gate: if the formal verdict already landed, the merge should
 # not wait for the next webhook event. The gate is idempotent and
 # re-derives everything from the forge; a "waiting" exit is normal when
-# the tooled reviewer has not concluded yet.
-"$(cd "$(dirname "$0")/.." && pwd)/scripts/fold-gate" "$REPO" "$PR" 2>&1 \
-  | tee -a "$STATE/gate.log" || true
+# the tooled reviewer has not concluded yet. (Output stays on stdout —
+# STATE/gate.log belongs to the board container's webhook pokes, whose
+# root-owned file the host cannot append to.)
+"$(cd "$(dirname "$0")/.." && pwd)/scripts/fold-gate" "$REPO" "$PR" || true
 echo "shadow verdict: $LABEL"
