@@ -494,6 +494,9 @@ def _harvest_tokens(ws, tokens, dbpath):
                   "t": now, "out_per_min": rate, "last_t": last_t}
 
 
+_prev_running = None
+
+
 def archive_transcripts():
     """Snapshot every reachable task's agentapi messages every 30s, so
     the transcript survives stop/freeze and Visit works in any state."""
@@ -508,10 +511,47 @@ def archive_transcripts():
                 reg = json.load(open(os.path.join(STATE_DIR, "tasks.json")))
             except (FileNotFoundError, json.JSONDecodeError):
                 reg = {}
-            running_native = {i["name"][5:] for i in incus_instances()
+            instances = incus_instances()
+            running_native = {i["name"][5:] for i in instances
                               if i["name"].startswith("fold-")
                               and i["status"] == "Running"}
             live = [n for n in reg if n.lower() in running_native]
+            # Conclusion notices (2026-11-24): a task PARKING is the
+            # pipeline's own "this thread concluded" event — merges are
+            # not (chains run several rounds). Tell the session that
+            # dispatched it (ctx), so planning stays aware of finished
+            # work and any ledger issues it left behind. Deliberately
+            # FYI mail with NO wake: nothing is action-required, so a
+            # parked shepherd reads the batch when next started
+            # (doorbells and findings bounces DO wake; this must not).
+            # A deleted instance is not a park; a board restart only
+            # resets the baseline (no false notices).
+            global _prev_running
+            if _prev_running is not None:
+                existing = {i["name"][5:] for i in instances
+                            if i["name"].startswith("fold-")}
+                for ws in reg:
+                    wl = ws.lower()
+                    if (wl in _prev_running
+                            and wl not in running_native
+                            and wl in existing):
+                        meta = reg.get(ws) or {}
+                        ctx = meta.get("ctx") or task_ctx().get(ws)
+                        if ctx and ctx != ws and ctx in reg:
+                            proj = meta.get("project") or "no project"
+                            enqueue_message(ctx, (
+                                f"[fold] Task {ws} ({proj}), dispatched "
+                                "under your context, has concluded and "
+                                "parked at rest. FYI — nothing needs "
+                                "doing now. When you next plan work on "
+                                "this project: its PRs and closing note "
+                                "are on the forge, and sweep the open "
+                                "'review findings — PR #...' ledger "
+                                "issues first, as your contract "
+                                "describes."))
+                            print(f"[archiver] park notice: {ws} -> "
+                                  f"{ctx}", flush=True)
+            _prev_running = set(running_native)
             for ws in live:
                 db = _pull_db(ws)
                 if db:

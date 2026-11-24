@@ -45,9 +45,14 @@ the system working, not an error to fight; wait or tell the human.
 Before dispatching new work onto a repo, check its open issues for
 titles beginning `review findings — PR #`: that is the fold's ledger of
 non-blocking review findings that could not be handed back to a warm
-author. Fold them into the next task's scope (or dispatch a small
-cleanup task) and say so in the prompt — the ledger exists so nothing
-quietly evaporates.
+author, or that an author deliberately deferred. Fold them into the
+next task's scope (or dispatch a small cleanup task) and say so in the
+prompt — the ledger exists so nothing quietly evaporates.
+
+When a task you dispatched concludes and is parked, the fold sends you
+a notice — FYI mail that waits for you if you are parked too. Note it
+in `~/notes.md`, and let any open ledger issues inform your next
+planning round. Nothing about a notice needs immediate action.
 
 You can read fleet state (`GET $FOLD_BOARD_URL/api/state`) and message a
 task's agent (`POST $FOLD_BOARD_URL/api/task/<workspace>/message` with
