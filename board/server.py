@@ -530,14 +530,18 @@ def archive_transcripts():
             if dirty:
                 os.makedirs(STATE_DIR, exist_ok=True)
                 json.dump(tokens, open(TOKENS_FILE, "w"))
-            # Reviewer auto-park (human-approved policy, 2026-10-26):
-            # reviewers rest live and messageable after their verdict —
-            # the conversation about a verdict happens near the verdict
-            # — then park after a day of recorded rest. foldctl
-            # re-verifies db-level quiescence at park time, so a late
-            # conversation mid-flight still blocks the stop.
+            # Auto-park after a day of recorded rest (reviewers
+            # 2026-10-26; authors 2026-11-24 — the decline path left
+            # them with no park actor, since only merges parked them).
+            # Both rest live and messageable after their handoff — the
+            # conversation happens near the work — then park. Shepherds
+            # are resident by design and never swept. foldctl
+            # re-verifies db-level quiescence AND an empty outbox at
+            # park time, so a late conversation or undelivered mail
+            # still blocks the stop. Parking is hibernation: doorbells
+            # and findings bounces wake a parked author.
             for ws in live:
-                if reg.get(ws, {}).get("flavor") != "reviewer":
+                if reg.get(ws, {}).get("flavor") == "shepherd":
                     continue
                 last_t = (tokens.get(ws) or {}).get("last_t")
                 if last_t and time.time() - last_t > 24 * 3600:
@@ -868,6 +872,18 @@ class H(BaseHTTPRequestHandler):
             "the API, address the points with commits on your "
             "branch, reply on the PR, re-run ./.fold/check, "
             "and comment when ready for re-review."))
+        # A parked author cannot receive the ring: wake it, exactly as
+        # the gate does for findings — hibernation kept its context
+        # warm, and the outbox delivers at its first rest. (With the
+        # 24h author park above, a PR awaiting a slow human review can
+        # easily outlive its author's wakefulness.)
+        st = subprocess.run(
+            ["incus", "list", f"fold-{ws.lower()}", "-c", "s",
+             "-f", "csv"], capture_output=True, text=True).stdout.strip()
+        if st == "STOPPED":
+            foldctl("start", ws)
+            print(f"[hook] {ws} was parked — started for doorbell "
+                  "delivery", flush=True)
         print(f"[hook] review by {sender} on {repo}#{pr.get('number')} -> "
               f"{ws}: queued for verified delivery", flush=True)
         return self._send(200, {"ok": True, "queued": True,

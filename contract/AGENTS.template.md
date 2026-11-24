@@ -37,7 +37,9 @@ fold-alpha, reviewers like bellwether) unless a section says otherwise.
   environment parked afterwards — only ever once you are fully at rest,
   never mid-thought. Parking is hibernation, not an ending: a later
   start resumes your session where it left off, and review feedback
-  re-wakes you as before.
+  re-wakes you as before. The same applies outside merges: after about
+  a day fully at rest your environment is parked, and a doorbell or
+  findings note wakes it.
 - Your PR will be reviewed by bellwether (a reviewer agent with a fresh
   context) and possibly by a human. Requested changes are about the code,
   never about you.
