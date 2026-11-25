@@ -712,6 +712,24 @@ function fillLlmSelects() {
 }
 document.addEventListener("change", (e) => { if (e.target.id === "llmSel") { $("#modelSel").value=""; fillLlmSelects(); } });
 
+// A live selection must outlive the refresh: SSE events land every
+// ~30s (token harvest alone changes state), and an unconditional
+// repaint rips the selection away mid-copy (observed). While any
+// selection stands, the freshest state parks here and paints the
+// moment the selection collapses — clicking anywhere does that, so a
+// held frame lasts exactly as long as the highlighted text does.
+let pendingPaint = null;
+function selectionBusy() {
+  const sel = document.getSelection();
+  return !!(sel && !sel.isCollapsed && sel.anchorNode
+            && document.body.contains(sel.anchorNode));
+}
+document.addEventListener("selectionchange", () => {
+  if (pendingPaint && !selectionBusy()) {
+    const s = pendingPaint; pendingPaint = null; paintState(s);
+  }
+});
+
 async function refresh() {
   let s;
   try {
@@ -723,6 +741,12 @@ async function refresh() {
     $("#stats").innerHTML = chip("failed", "disconnected — reload the page (login likely expired)");
     return;
   }
+  if (selectionBusy()) { pendingPaint = s; return; }
+  pendingPaint = null;
+  paintState(s);
+}
+
+function paintState(s) {
   endpoints = s.endpoints || {}; llmDefault = s.llm_default || {};
   repos = s.repos || {}; repoDefault = s.repo_default || null;
   lastState = s;
