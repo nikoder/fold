@@ -213,9 +213,14 @@
       <span class="m" id="tdKeyHint" style="align-self:center;" hidden></span>
       <span id="tdDlgHelp" style="align-self:center;" hidden>
         <span class="m">permission dialog (selection invisible here):</span>
-        <button class="quiet" type="button" onclick="sendKeys('\r')">Allow once</button>
-        <button class="quiet" type="button" onclick="sendKeys('\t\r')">Allow always</button>
-        <button class="quiet" type="button" onclick="sendKeys('\t\t\r')">Reject</button>
+        <!-- each sequence first clamps focus to the leftmost option
+             with left-arrows: the selection is invisible, so any keys
+             already pressed blind (it happened — a stray Tab turned an
+             approval into a Reject) must not shift the target. Assumes
+             the option row clamps rather than wraps. -->
+        <button class="quiet" type="button" onclick="sendKeys('\x1b[D\x1b[D\x1b[D\r')">Allow once</button>
+        <button class="quiet" type="button" onclick="sendKeys('\x1b[D\x1b[D\x1b[D\t\r')">Allow always</button>
+        <button class="quiet" type="button" onclick="sendKeys('\x1b[D\x1b[D\x1b[D\t\t\r')">Reject</button>
       </span>
     </div>
     <div class="term" id="tdTerm">connecting…</div>
