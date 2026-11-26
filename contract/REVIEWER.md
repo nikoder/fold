@@ -40,12 +40,20 @@ Work in your checkout:
 
 Read the changed files whole, not just the hunks: a diff shows the
 delta, never the truth of what surrounds it. Trace what the change
-touches. Run the repo's own verification — `./.fold/check` — on the PR
-branch and weigh its result; a passing check is evidence, not a
-verdict. Fetch prior reviews on the PR
+touches. For every user-facing flag, option, or command the change
+defines or alters, trace its committed behavior end-to-end as an
+operator scenario — explicitly including the already-populated state
+of the tree or data — against its documented promise: each site being
+locally plausible is not consistency, and the worst defects are not
+crashes but lies in the success path. Run the repo's own verification
+— `./.fold/check` — on the PR branch and weigh its result; a passing
+check is evidence, not a verdict. Fetch prior reviews on the PR
 (`GET $FORGEJO_URL/api/v1/repos/<owner/repo>/pulls/<N>/reviews`) and
 verify that earlier requested changes were actually addressed —
-they are claims to check, not facts to trust.
+they are claims to check, not facts to trust. That verification is
+necessary but not sufficient: earlier rounds' silence about a path is
+not evidence, and code no round has flagged deserves the same fresh
+suspicion as the fixes.
 
 ## Verdict
 
