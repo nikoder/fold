@@ -218,6 +218,7 @@
     </div>
     <div class="drow" style="margin-top:.6rem;">
       <span class="m" id="tdMsgHint" style="margin-right:auto; align-self:center;">Enter sends · Shift+Enter for a newline</span>
+      <button class="quiet" id="tdStart" type="button" hidden>Start</button>
       <button class="quiet" id="tdPause" type="button">Pause</button>
       <button class="quiet" id="tdStop" type="button">Stop</button>
       <button class="quiet" id="tdClose" type="button">Close</button>
@@ -358,6 +359,13 @@ function tdChips() {
   $("#tdChips").innerHTML = t
     ? `${(t.template||"").includes("shepherd") ? chip("shepherd","shepherd")+" " : ""}${stChip(t)} ${t.project ? chip("neutral","⌂ "+t.project) : ""} ${t.model ? chip("neutral", t.model.length>18 ? t.model.slice(0,16)+"…" : t.model) : ""} ${t.ctx ? chip("neutral","ctx "+t.ctx) : ""}${tokChips(t)}`
     : "";
+  // the levers must match the life state: a hibernated session offers
+  // Start, a running one Pause/Stop — stale running-verbs on a stopped
+  // card were an invitation to no-op clicks (and vice versa, worse)
+  const parked = !!t && ["stopped", "stopping"].includes(t.ws_status);
+  $("#tdStart").hidden = visitingIsBW || !t || !parked;
+  $("#tdPause").hidden = visitingIsBW || parked || !!(t && t.frozen);
+  $("#tdStop").hidden = visitingIsBW || parked;
 }
 const VIEWS = {board: "#board", archive: "#archive", fleet: "#fleetView"};
 function setView(v) {
@@ -628,6 +636,7 @@ $("#taskdlg").addEventListener("close", () => {
   if (location.hash.startsWith("#visit="))
     history.replaceState(null, "", location.pathname + location.search);
 });
+$("#tdStart").onclick = () => { act("start", visiting); };
 $("#tdPause").onclick = () => { act("pause", visiting); };
 $("#tdStop").onclick = () => { const w=visiting; closeTask(); act("stop", w); };
 // Unsent message drafts survive reloads, per task (the dispatch form

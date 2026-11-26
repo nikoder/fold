@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# fold-review-launch — quiescence-gated, debounced launch of both review
+# lanes for one PR. The board webhook spawns this on pull_request
+# opened/reopened/synchronized events for machine-gated repos; humans
+# can run it directly too:
+#
+#   fold-review-launch <project> <owner/repo> <pr> [head-ref]
+#
+# Readiness is the author's CONCLUDED TURN (the fold's standing
+# doctrine), not the PR API call: pushes land several to a turn, each
+# firing an event, so one launcher per PR holds a lock through the wait,
+# then reviews whatever head the finished turn left behind. The lock is
+# released BEFORE the lanes run — a push arriving mid-review spawns a
+# fresh launcher, waits out the new turn, and earns the new head its own
+# round. A PR without a registered author session (a human's) is ready
+# the moment it exists.
+set -euo pipefail
+PROJECT=${1:?usage: fold-review-launch <project> <owner/repo> <pr> [head-ref]}
+REPO=${2:?owner/repo}
+PR=${3:?pr}
+HEADREF=${4:-}
+HERE=$(cd "$(dirname "$0")/.." && pwd)
+STATE=${FOLD_STATE_DIR:-$HOME/.local/state/fold}
+LOCK="$STATE/review-launch-${REPO//\//_}-$PR.lock"
+
+if [ -d "$LOCK" ]; then
+  AGE=$(( $(date +%s) - $(stat -c %Y "$LOCK") ))
+  if [ "$AGE" -lt 2700 ]; then
+    echo "[$(date -Is)] $REPO#$PR: a launch is already pending (${AGE}s) — debounced"
+    exit 0
+  fi
+  rmdir "$LOCK" 2>/dev/null || true   # a dead launcher's leftovers
+fi
+mkdir "$LOCK" 2>/dev/null || { echo "[$(date -Is)] $REPO#$PR: raced another launcher — yielding"; exit 0; }
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+
+# Author session, registry-owned (exact branch, then the -followup
+# convention — only the author's own token can push such a branch).
+WS=""
+if [ -n "$HEADREF" ]; then
+  WS=$(python3 - "$STATE/tasks.json" "$HEADREF" <<'PY'
+import json, sys
+try:
+    reg = json.load(open(sys.argv[1]))
+except Exception:
+    reg = {}
+head = sys.argv[2]
+ws = next((k for k, v in reg.items() if isinstance(v, dict)
+           and v.get("branch") == head), "")
+if not ws:
+    pref = [k for k, v in reg.items() if isinstance(v, dict)
+            and v.get("branch") and head.startswith(v["branch"] + "-")]
+    ws = pref[0] if len(pref) == 1 else ""
+print(ws)
+PY
+)
+fi
+
+if [ -n "$WS" ]; then
+  echo "[$(date -Is)] $REPO#$PR: waiting for author $WS to conclude its turn"
+  for _ in $(seq 120); do
+    "$HERE/bin/foldctl" quiet "$WS" >/dev/null 2>&1 && break
+    sleep 15
+  done
+  # a turn still open after 30 min is reviewed anyway: the lanes read
+  # the current head, and a later push re-triggers a fresh round
+fi
+
+rmdir "$LOCK" 2>/dev/null || true
+trap - EXIT
+echo "[$(date -Is)] $REPO#$PR: launching review lanes (author ${WS:-none})"
+"$HERE/scripts/bellwether-v2.sh" "$PROJECT" "$PR"
+FOLD_REPO="$REPO" "$HERE/scripts/bellwether-review.sh" "$PR"

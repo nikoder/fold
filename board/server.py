@@ -905,6 +905,42 @@ class H(BaseHTTPRequestHandler):
         sender = (body.get("sender") or {}).get("login") or "a reviewer"
         if not event.startswith("pull_request"):
             return self._send(200, {"ok": True, "ignored": event})
+        if event == "pull_request":
+            # Automatic review invocation (the pipeline's last manual
+            # link, closed 2026-11-26): a PR opened or newly pushed on a
+            # machine-gated repo gets both lanes. The launcher applies
+            # the standing readiness doctrine — the author's CONCLUDED
+            # TURN, not the PR API call — waiting for db-verified rest
+            # and debouncing the push-per-commit burst, then reviews the
+            # head the turn left behind. Policy is registry-owned:
+            # review=human repos keep human-invoked reviews.
+            action = body.get("action") or ""
+            if action not in ("opened", "reopened", "synchronized"):
+                return self._send(200, {"ok": True, "ignored": action})
+            p = body.get("pull_request") or {}
+            rname = (body.get("repository") or {}).get("full_name") or ""
+            href = (p.get("head") or {}).get("ref") or ""
+            try:
+                rreg = json.load(open(os.path.join(STATE_DIR,
+                                                   "repos.json")))
+            except (FileNotFoundError, json.JSONDecodeError):
+                rreg = {}
+            proj = next((k for k, v in rreg.items() if isinstance(v, dict)
+                         and v.get("repo") == rname
+                         and v.get("review") == "bellwether"), "")
+            if not proj or not p.get("number"):
+                return self._send(200, {"ok": True,
+                                        "ignored": "not machine-gated"})
+            launcher = os.path.join(HERE, "..", "scripts",
+                                    "fold-review-launch")
+            with open(os.path.join(STATE_DIR, "review-launch.log"),
+                      "ab") as lg:
+                subprocess.Popen(
+                    [launcher, proj, rname, str(p["number"]), href],
+                    stdout=lg, stderr=lg, start_new_session=True)
+            print(f"[hook] PR {action} on {rname}#{p.get('number')} -> "
+                  "review lanes launching", flush=True)
+            return self._send(200, {"ok": True, "review": "launching"})
         pr = body.get("pull_request") or {}
         repo = (body.get("repository") or {}).get("full_name") or ""
         if sender == "bellwether" and "reject" not in rtype \
@@ -1064,6 +1100,30 @@ class H(BaseHTTPRequestHandler):
             content = body.get("content", "").strip()
             if not content:
                 return self._send(400, {"error": "content required"})
+            ws = m.group(1)
+            # A human addressing a parked session wants a conversation,
+            # not a mailbox: wake it — hibernation resumes the thread,
+            # and the outbox delivers at its first rest after boot.
+            # Agent-plane and machinery mail keeps queue-only semantics
+            # (the no-wake rule for FYI notices lives there); only the
+            # gate's findings bounce wakes, and it does so itself.
+            sec = self._human_secret()
+            if sec and hmac.compare_digest(
+                    self.headers.get("X-Fold-Human", ""), sec):
+                st = subprocess.run(
+                    ["incus", "list", f"fold-{ws.lower()}", "-c", "s",
+                     "-f", "csv"], capture_output=True,
+                    text=True).stdout.strip()
+                if st == "STOPPED":
+                    enqueue_message(ws, content)
+                    foldctl("start", ws)
+                    print(f"[message] {ws} was parked — started for "
+                          "human-plane delivery", flush=True)
+                    return self._send(200, {
+                        "queued": True, "woke": True,
+                        "note": "session was parked — starting it; your "
+                                "message delivers when it rests after "
+                                "boot"})
             r = agentapi(m.group(1), "/message",
                          {"content": content, "type": "user"})
             if "error" in r:

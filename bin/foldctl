@@ -417,29 +417,37 @@ def cmd_repos_add(args):
     except urllib.error.HTTPError as e:
         print(f"branch protection not added (HTTP {e.code} — "
               "may already exist)")
-    # Review-feedback webhook: the forge tells the board about human
-    # reviews; changes-requested ones ring the author's session. Skipped
-    # with a note when board URL or webhook secret is missing.
-    # Idempotent: an existing hook at the same URL is left alone.
+    # Review-pipeline webhook: the forge tells the board about reviews
+    # (doorbells, gate pokes) AND pull_request events (automatic review
+    # invocation on machine-gated repos). Skipped with a note when board
+    # URL or webhook secret is missing. Idempotent, and an existing hook
+    # at the same URL is PATCHed up to the current event set.
     board = conf("FOLD_BOARD_URL")
     whsec = cred("FOLD_WEBHOOK_SECRET")
+    # event names must be from the forge's fixed vocabulary — unknown
+    # names are SILENTLY dropped (events: []). Fine-grained filters
+    # (rejected-only, action names) live in the board handler instead.
+    HOOK_EVENTS = ["pull_request_review", "pull_request"]
     if board and whsec:
         hook_url = f"{board}/api/forgejo-hook"
         existing = forgejo_api(f"/repos/{path}/hooks", token=admin)
-        if any((h.get("config") or {}).get("url") == hook_url
-               for h in existing):
+        cur = next((h for h in existing
+                    if (h.get("config") or {}).get("url") == hook_url),
+                   None)
+        if cur and set(cur.get("events") or []) >= set(HOOK_EVENTS):
             print("webhook: already present")
+        elif cur:
+            forgejo_api(f"/repos/{path}/hooks/{cur['id']}", "PATCH",
+                        {"events": HOOK_EVENTS}, admin)
+            print(f"webhook: events updated -> {HOOK_EVENTS}")
         else:
-            # event name must be from the forge's fixed vocabulary —
-            # unknown names are SILENTLY dropped (events: []). The
-            # rejected-only filter lives in the board handler instead.
             forgejo_api(f"/repos/{path}/hooks", "POST",
                         {"type": "forgejo", "active": True,
-                         "events": ["pull_request_review"],
+                         "events": HOOK_EVENTS,
                          "config": {"url": hook_url,
                                     "content_type": "json",
                                     "secret": whsec}}, admin)
-            print("webhook: pull_request_review -> board doorbell")
+            print(f"webhook: {HOOK_EVENTS} -> board")
     else:
         print("webhook: skipped (needs FOLD_BOARD_URL in fold.env and "
               "FOLD_WEBHOOK_SECRET in creds)")
