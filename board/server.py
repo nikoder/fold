@@ -11,12 +11,14 @@ the human (any gate works — ours is a WebAuthn key-tap) and injects the
 X-Fold-Human secret header. Loopback and the agent bearer plane also
 work. Env: FOLD_BOARD_BIND, FOLD_BOARD_PORT, FOLD_MAX_WORKING.
 """
+import base64
 import hashlib
 import hmac
 import json
 import os
 import re
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -377,8 +379,20 @@ def state():
         reviews = json.load(open(os.path.join(STATE_DIR, "reviews.json")))
     except (FileNotFoundError, json.JSONDecodeError):
         reviews = {}
+    # work-input files per project (foldctl files …): names only — the
+    # shepherd references them in prompts, the UI lists them
+    pfiles = {}
+    fbase = os.path.join(STATE_DIR, "files")
+    try:
+        for proj in sorted(os.listdir(fbase)):
+            d = os.path.join(fbase, proj)
+            if os.path.isdir(d):
+                pfiles[proj] = sorted(os.listdir(d))
+    except FileNotFoundError:
+        pass
     return {"tasks": slim, "fleet": fleet, "hands": hands(),
             "bellwether": bellwether, "reviews": reviews,
+            "project_files": pfiles,
             "repos": repo_summary, "repo_reviews": repo_reviews,
             "repo_default": rr.get("_default"),
             "endpoints": ep_summary, "llm_default": eps.get("_default", {}),
@@ -1016,6 +1030,10 @@ class H(BaseHTTPRequestHandler):
         if not self._gate("POST"):
             return
         n = int(self.headers.get("Content-Length", 0))
+        if n > 64_000_000:
+            # covers base64-inflated file uploads with margin; nothing
+            # legitimate on this API is bigger
+            return self._send(413, {"error": "payload too large"})
         try:
             body = json.loads(self.rfile.read(n) or b"{}")
         except json.JSONDecodeError:
@@ -1103,6 +1121,75 @@ class H(BaseHTTPRequestHandler):
             return self._send(200, agentapi(
                 m.group(1), "/message",
                 {"content": str(keys)[:256], "type": "raw"}))
+        if self.path == "/api/repos/files":
+            # Attach a work input to a project (human plane — this path
+            # is not in the agent allowlists): every future dispatch on
+            # the project receives it in ~/project-files/. Work inputs
+            # only, never credentials — it lands in agent-readable homes.
+            proj = str(body.get("project") or "")[:64]
+            fname = str(body.get("name") or "")[:160]
+            try:
+                blob = base64.b64decode(body.get("data_b64") or "",
+                                        validate=True)
+            except Exception:
+                return self._send(400, {"error": "bad data_b64"})
+            if not proj or not fname or not blob:
+                return self._send(400, {"error": "project, name and "
+                                        "data_b64 required"})
+            tf = tempfile.NamedTemporaryFile(delete=False)
+            tf.write(blob)
+            tf.close()
+            try:
+                r = foldctl("files", "add", proj, tf.name,
+                            "--name", fname)
+            finally:
+                os.unlink(tf.name)
+            return self._send(200 if r.get("ok") else 400, r)
+        m = re.fullmatch(r"/api/task/([\w-]+)/file", self.path)
+        if m:
+            # Ad-hoc delivery into one session's ~/inbox/ (human plane).
+            # A parked recipient is woken — a human handing over a file
+            # wants it there — and the session is told by courtesy note
+            # (a silently appearing file is a haunting, not a delivery).
+            ws = m.group(1)
+            fname = str(body.get("name") or "")[:160]
+            try:
+                blob = base64.b64decode(body.get("data_b64") or "",
+                                        validate=True)
+            except Exception:
+                return self._send(400, {"error": "bad data_b64"})
+            if not fname or not blob:
+                return self._send(400, {"error": "name and data_b64 "
+                                        "required"})
+            st = subprocess.run(
+                ["incus", "list", f"fold-{ws.lower()}", "-c", "s",
+                 "-f", "csv"], capture_output=True,
+                text=True).stdout.strip()
+            woke = st == "STOPPED"
+            if woke:
+                foldctl("start", ws)
+            tf = tempfile.NamedTemporaryFile(delete=False)
+            tf.write(blob)
+            tf.close()
+            try:
+                r = {}
+                for _ in range(20 if woke else 2):
+                    r = foldctl("deliver", ws, tf.name, "--name", fname)
+                    if r.get("ok"):
+                        break
+                    time.sleep(3)
+            finally:
+                os.unlink(tf.name)
+            if not r.get("ok"):
+                return self._send(502, {"error": r.get("out",
+                                                       "delivery failed")})
+            enqueue_message(ws, (
+                f"[fold] The human delivered a file to your inbox: "
+                f"~/inbox/{fname} ({len(blob)} bytes)."))
+            return self._send(200, {
+                "ok": True, "woke": woke,
+                "note": f"delivered to ~/inbox/{fname}; session notified"
+                        + (" (was parked — started it)" if woke else "")})
         m = re.fullmatch(r"/api/task/([\w-]+)/message", self.path)
         if m:
             content = body.get("content", "").strip()

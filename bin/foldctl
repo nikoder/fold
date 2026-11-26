@@ -41,6 +41,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -621,6 +622,10 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
         # parsed by the incus CLI as a flag and abort mid-provision.
         incus("config", "set", inst, f"user.fold_{k}={v}")
     incus("start", inst)
+    # Work inputs the human attached to the project (foldctl files add)
+    # ride into every dispatch on it: ~/project-files/, owned by the
+    # agent. The home volume mounts at start, so this follows it.
+    push_project_files(inst, project)
     reg = registry()
     reg[name] = {"flavor": flavor, "created": int(time.time()),
                  "prompt": prompt, "ctx": ctx,
@@ -639,6 +644,105 @@ def native_dispatch(flavor, prompt, mem_gib=None, ctx=None,
     print(f"dispatched {name} (native {flavor}, instance {inst}, "
           f"mem cap {max(2, int(need * 2))}GiB"
           + (f", ctx {ctx}" if ctx else "") + ")")
+
+
+def safe_filename(name):
+    """One path component, boring charset: file names cross the
+    human→host→agent boundary and must never smuggle a path."""
+    base = os.path.basename((name or "").replace("\\", "/")).strip()
+    base = re.sub(r"[^\w.+\- ()]", "_", base)[:128]
+    if not base or base.startswith("."):
+        sys.exit(f"unusable file name: {name!r}")
+    return base
+
+
+def project_files_dir(project):
+    return os.path.join(STATE_DIR, "files", project)
+
+
+def _valid_project(project):
+    try:
+        reg = json.load(open(os.path.join(STATE_DIR, "repos.json")))
+    except (FileNotFoundError, json.JSONDecodeError):
+        reg = {}
+    if project == "_default" or not isinstance(reg.get(project), dict):
+        sys.exit(f"'{project}' is not a registered project")
+
+
+def cmd_files_add(args):
+    # Work inputs only, never credentials: everything here lands in
+    # agent-readable homes and may be quoted into transcripts.
+    _valid_project(args.project)
+    name = safe_filename(args.name or args.path)
+    dst = project_files_dir(args.project)
+    os.makedirs(dst, exist_ok=True)
+    shutil.copyfile(args.path, os.path.join(dst, name))
+    size = os.path.getsize(os.path.join(dst, name))
+    print(f"{args.project}: '{name}' attached ({size} bytes) — lands in "
+          "~/project-files/ of every future dispatch on this project")
+
+
+def cmd_files_rm(args):
+    _valid_project(args.project)
+    p = os.path.join(project_files_dir(args.project),
+                     safe_filename(args.name))
+    if not os.path.isfile(p):
+        sys.exit(f"{args.project}: no such file '{args.name}'")
+    os.remove(p)
+    print(f"{args.project}: '{args.name}' detached (already-dispatched "
+          "homes keep their copy)")
+
+
+def cmd_files_list():
+    base = os.path.join(STATE_DIR, "files")
+    found = False
+    for proj in sorted(os.listdir(base)) if os.path.isdir(base) else []:
+        for f in sorted(os.listdir(os.path.join(base, proj))):
+            size = os.path.getsize(os.path.join(base, proj, f))
+            print(f"{proj:20} {f:40} {size:>10} bytes")
+            found = True
+    if not found:
+        print("no project files attached (foldctl files add "
+              "<project> <path>)")
+
+
+def push_project_files(inst, project):
+    """Copy a project's attached files into a freshly started instance.
+    Best-effort by design: a delivery failure must not kill a dispatch —
+    the agent can raise a hand about a missing file; it cannot about a
+    never-created environment."""
+    d = project_files_dir(project) if project else None
+    files = sorted(os.listdir(d)) if d and os.path.isdir(d) else []
+    if not files:
+        return
+    try:
+        incus("exec", inst, "--", "mkdir", "-p",
+              "/home/coder/project-files")
+        for f in files:
+            incus("file", "push", "--uid", "1000", "--gid", "1000",
+                  os.path.join(d, f),
+                  f"{inst}/home/coder/project-files/{f}")
+        incus("exec", inst, "--", "chown", "1000:1000",
+              "/home/coder/project-files")
+        print(f"project files: {len(files)} pushed to ~/project-files/")
+    except SystemExit:
+        print(f"WARNING: project-file push failed for {inst} — dispatch "
+              "continues; deliver by hand (foldctl deliver)", flush=True)
+
+
+def cmd_deliver(args):
+    """Push one file into a RUNNING workspace's ~/inbox/. The caller
+    owns telling the session (the board sends a courtesy note when it
+    drives this verb; a human on the CLI can speak for themselves)."""
+    inst = f"fold-{args.workspace.lower()}"
+    name = safe_filename(args.name or args.path)
+    incus("exec", inst, "--", "mkdir", "-p", "/home/coder/inbox")
+    incus("file", "push", "--uid", "1000", "--gid", "1000",
+          args.path, f"{inst}/home/coder/inbox/{name}")
+    incus("exec", inst, "--", "chown", "1000:1000", "/home/coder/inbox")
+    size = os.path.getsize(args.path)
+    print(f"{args.workspace}: delivered '{name}' ({size} bytes) to "
+          "~/inbox/")
 
 
 def cmd_tasks():
@@ -1047,6 +1151,25 @@ def build_parser():
                            "into an existing bare repo; automatic with "
                            "--create")
     padd.set_defaults(func=cmd_repos_add)
+    p = sub.add_parser("files", help="work-input files agents receive "
+                       "at dispatch (~/project-files/)")
+    p.set_defaults(func=lambda args: cmd_files_list())
+    fsub = p.add_subparsers(dest="files_cmd")
+    fadd = fsub.add_parser("add", help="attach a file to a project")
+    fadd.add_argument("project")
+    fadd.add_argument("path")
+    fadd.add_argument("--name", help="override the stored file name")
+    fadd.set_defaults(func=cmd_files_add)
+    frm = fsub.add_parser("rm", help="detach a file from a project")
+    frm.add_argument("project")
+    frm.add_argument("name")
+    frm.set_defaults(func=cmd_files_rm)
+    p = sub.add_parser("deliver", help="push a file into a running "
+                       "workspace's ~/inbox/")
+    p.add_argument("workspace")
+    p.add_argument("path")
+    p.add_argument("--name", help="override the delivered file name")
+    p.set_defaults(func=cmd_deliver)
     pdis = sub.add_parser(
         "dispatch", help="create a task; --repo picks the project "
         "(registry name), --llm and --model the inference pair")

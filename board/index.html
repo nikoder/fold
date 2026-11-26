@@ -200,6 +200,7 @@
     <label style="font-size:.78rem; display:block; margin-bottom:.6rem;"><input type="checkbox" id="projDefault"> make it the dispatch default</label>
     <div class="drow">
       <button class="quiet" id="projClose">Close</button>
+      <input type="file" id="projFileInput" hidden>
       <button id="projAdd">Register</button>
     </div>
   </dialog>
@@ -218,10 +219,12 @@
     </div>
     <div class="drow" style="margin-top:.6rem;">
       <span class="m" id="tdMsgHint" style="margin-right:auto; align-self:center;">Enter sends · Shift+Enter for a newline</span>
+      <button class="quiet" id="tdFile" type="button" title="deliver a file to this session's ~/inbox/ (it gets a note; a parked session is started)">📎 file</button>
       <button class="quiet" id="tdStart" type="button" hidden>Start</button>
       <button class="quiet" id="tdPause" type="button">Pause</button>
       <button class="quiet" id="tdStop" type="button">Stop</button>
       <button class="quiet" id="tdClose" type="button">Close</button>
+      <input type="file" id="tdFileInput" hidden>
     </div>
   </dialog>
   <div id="toast" role="status"></div>
@@ -581,6 +584,7 @@ function openTask(ws, name, st) {
   visitingIsBW = ws.startsWith("bellwether-");
   $("#tdPause").hidden = visitingIsBW;
   $("#tdStop").hidden = visitingIsBW;
+  $("#tdFile").hidden = visitingIsBW;
   $("#tdScreen").hidden = visitingIsBW;
   $("#tdTitle").textContent = (name || ws) + (st && st!=="running" ? ` · ${st}` : "");
   $("#tdMsg").value = drafts[ws] || "";
@@ -636,6 +640,10 @@ $("#taskdlg").addEventListener("close", () => {
   if (location.hash.startsWith("#visit="))
     history.replaceState(null, "", location.pathname + location.search);
 });
+$("#tdFile").onclick = () => $("#tdFileInput").click();
+$("#tdFileInput").onchange = () =>
+  sendFileVia(`/api/task/${visiting}/file`, {}, $("#tdFileInput"),
+              "delivered");
 $("#tdStart").onclick = () => { act("start", visiting); };
 $("#tdPause").onclick = () => { act("pause", visiting); };
 $("#tdStop").onclick = () => { const w=visiting; closeTask(); act("stop", w); };
@@ -825,12 +833,41 @@ function paintState(s) {
 }
 function renderProjects() {
   const rv = (lastState || {}).repo_reviews || {};
-  $("#projList").innerHTML = `<tr style="text-align:left; color:var(--soft);"><th>project</th><th>repo</th><th>review</th></tr>` +
+  const pf = (lastState || {}).project_files || {};
+  $("#projList").innerHTML = `<tr style="text-align:left; color:var(--soft);"><th>project</th><th>repo</th><th>review</th><th>files</th></tr>` +
     (Object.keys(repos).length ? Object.entries(repos).map(([k, v]) =>
       `<tr><td>${k}${k===repoDefault ? " ★" : ""}</td><td class="mono">${v}</td>
-       <td><button class="quiet" title="bellwether: approval auto-merges · human: merging stays yours — click to switch" onclick="setReview('${k}','${(rv[k]||"bellwether")==="human" ? "bellwether" : "human"}')">${rv[k]||"bellwether"}</button></td></tr>`).join("")
-     : `<tr><td colspan="3" style="color:var(--soft);">none registered yet</td></tr>`);
+       <td><button class="quiet" title="bellwether: approval auto-merges · human: merging stays yours — click to switch" onclick="setReview('${k}','${(rv[k]||"bellwether")==="human" ? "bellwether" : "human"}')">${rv[k]||"bellwether"}</button></td>
+       <td>${(pf[k]||[]).map(f=>`<span class="chip neutral">${f}</span>`).join(" ")}
+           <button class="quiet" title="attach a work-input file: every future dispatch on this project receives it in ~/project-files/ (work inputs only, never credentials)" onclick="pickProjFile('${k}')">📎 attach</button></td></tr>`).join("")
+     : `<tr><td colspan="4" style="color:var(--soft);">none registered yet</td></tr>`);
 }
+// Files cross the human->agent boundary as base64 JSON: dependency-free
+// on both ends, and the 40MB cap keeps base64 inflation under the
+// server's payload ceiling.
+function sendFileVia(url, extra, input, doneMsg) {
+  const f = input.files && input.files[0];
+  input.value = "";
+  if (!f) return;
+  if (f.size > 40_000_000) { toast("file too large (40MB cap)"); return; }
+  const rd = new FileReader();
+  rd.onload = async () => {
+    const b64 = String(rd.result).split(",", 2)[1] || "";
+    toast(`sending ${f.name}…`);
+    const r = await api(url, {method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({...extra, name: f.name, data_b64: b64})});
+    toast(r.error ? r.error : (r.note || r.out || doneMsg));
+    await refresh();
+    if ($("#projdlg").open) renderProjects();
+  };
+  rd.readAsDataURL(f);
+}
+let pendingProjFile = null;
+function pickProjFile(proj) { pendingProjFile = proj; $("#projFileInput").click(); }
+$("#projFileInput").onchange = () =>
+  sendFileVia("/api/repos/files", {project: pendingProjFile},
+              $("#projFileInput"), "attached");
 async function setReview(name, mode) {
   const r = await api("/api/repos/review", {method:"POST",
     headers:{"Content-Type":"application/json"},

@@ -42,6 +42,12 @@ your session id is `FOLD_CTX`):
 Admission control may refuse (too many working, low memory) — that is
 the system working, not an error to fight; wait or tell the human.
 
+The human can attach work-input files to a project (your board state
+lists them under `project_files`); every task dispatched onto that
+project receives them in `~/project-files/` automatically. When a task
+needs one, name the file in the prompt — you never handle the bytes,
+only the reference.
+
 Before dispatching new work onto a repo, check its open issues for
 titles beginning `review findings — PR #`: that is the fold's ledger of
 non-blocking review findings that could not be handed back to a warm
