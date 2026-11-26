@@ -211,6 +211,12 @@
       <button class="quiet vtab active" id="tdChat">Conversation</button>
       <button class="quiet vtab" id="tdScreen">Screen</button>
       <span class="m" id="tdKeyHint" style="align-self:center;" hidden></span>
+      <span id="tdDlgHelp" style="align-self:center;" hidden>
+        <span class="m">permission dialog (selection invisible here):</span>
+        <button class="quiet" type="button" onclick="sendKeys('\r')">Allow once</button>
+        <button class="quiet" type="button" onclick="sendKeys('\t\r')">Allow always</button>
+        <button class="quiet" type="button" onclick="sendKeys('\t\t\r')">Reject</button>
+      </span>
     </div>
     <div class="term" id="tdTerm">connecting…</div>
     <div class="msgrow">
@@ -396,6 +402,7 @@ function setVisitMode(mode) {
     $("#tdTerm").tabIndex = 0;
     $("#tdKeyHint").textContent = KEYHINT_IDLE;
     $("#tdKeyHint").hidden = false;
+    $("#tdDlgHelp").hidden = true;
     const src = new EventSource(`/api/task/${visiting}/screen`);
     screenSrc = src;
     src.addEventListener("screen", (e) => {
@@ -403,7 +410,19 @@ function setVisitMode(mode) {
       // frame from a stale/leaked stream must never fight the
       // conversation renderer for the pane
       if (visitMode !== "screen" || screenSrc !== src) { src.close(); return; }
-      try { $("#tdTerm").textContent = JSON.parse(e.data).screen; }
+      try {
+        const txt = JSON.parse(e.data).screen;
+        $("#tdTerm").textContent = txt;
+        // The plain-text screen drops ANSI attributes, so a TUI
+        // dialog's selection highlight is invisible — keystrokes work
+        // but their effect can't be seen (a human pressed Tab blind
+        // and reasonably refused to press Enter). When the known
+        // permission dialog is on screen, offer its options as real
+        // buttons that send the right key sequence from a KNOWN focus
+        // state (opencode opens on "Allow once").
+        $("#tdDlgHelp").hidden =
+          !(txt.includes("Permission required") && txt.includes("Allow once"));
+      }
       catch {}
     });
     // idle streams time out server-side; EventSource reconnects itself
@@ -411,6 +430,7 @@ function setVisitMode(mode) {
   } else {
     $("#tdTerm").removeAttribute("tabindex");
     $("#tdKeyHint").hidden = true;
+    $("#tdDlgHelp").hidden = true;
     $("#tdTerm").textContent = "connecting…";
     lastChat = null;  // the cache must not outlive what is on screen
     pollVisit();
