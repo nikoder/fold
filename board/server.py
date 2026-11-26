@@ -831,12 +831,20 @@ class H(BaseHTTPRequestHandler):
                     return self._send(200, {"messages": msgs,
                                             "queued": queued,
                                             "source": "opencode-db"})
+                # every fallback carries the outbox too: a hibernated
+                # instance's volume is unmountable, so its Visit comes
+                # from the archive — which must not hide the mail still
+                # waiting for it (observed: queued note vanished from
+                # view on reopen, while the outbox held it correctly)
                 live = agentapi(ws, "/messages")
                 if "error" not in live:
+                    live["queued"] = queued
                     return self._send(200, live)
                 arch = archived_transcript(ws)
                 if arch:
+                    arch["queued"] = queued
                     return self._send(200, arch)
+                live["queued"] = queued
                 return self._send(200, live)
             self._send(404, {"error": "not found"})
 
