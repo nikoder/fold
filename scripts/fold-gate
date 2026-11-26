@@ -113,7 +113,7 @@ def main():
         return 2
     repo = entry["repo"]
 
-    def gate_note(outcome):
+    def gate_note(outcome, sig=None):
         # audit breadcrumb on the review index; best-effort
         try:
             rp = os.path.join(STATE, "reviews.json")
@@ -121,6 +121,8 @@ def main():
             e = rv.get(f"{repo}#{pr_n}")
             if isinstance(e, dict):
                 e["gate"], e["gate_t"] = outcome, int(time.time())
+                if sig:
+                    e["gate_sig"] = sig
                 json.dump(rv, open(rp, "w"), indent=1)
         except Exception:
             pass
@@ -167,6 +169,19 @@ def main():
     if sv != "APPROVE":
         # Disagreement between two differently-shaped readers is exactly
         # what this gate exists to catch: no merge, human sees both.
+        # Idempotent per (head, verdict pair): several pokes observe the
+        # same disagreement — the webhook fires per review event AND v1
+        # pokes at end of run (observed: two identical hands for one
+        # disagreement) — but the human gets exactly one hand for it.
+        sig = f"{head[:12]}:{formal.get('id')}:{shadow.get('id')}"
+        try:
+            prev = json.load(open(os.path.join(STATE, "reviews.json")))
+            if (prev.get(f"{repo}#{pr_n}") or {}).get("gate_sig") == sig:
+                log(f"{repo}#{pr_n}: disagreement already escalated "
+                    f"({sig}) — hand not re-raised")
+                return 4
+        except Exception:
+            pass
         msg = (f"PR #{pr_n} ({repo}): two-key disagreement — formal "
                f"bellwether review is APPROVED but the v1 shadow verdict "
                f"is {sv}. No merge; both verdicts are on the PR.")
@@ -181,7 +196,7 @@ def main():
             except Exception as exc:
                 log(f"ntfy hand failed ({exc}) — disagreement stands "
                     "unmerged either way")
-        gate_note("escalated")
+        gate_note("escalated", sig=sig)
         return 4
 
     # --- gated paths: the deploy envelope stays with humans ---
