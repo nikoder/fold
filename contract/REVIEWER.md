@@ -60,6 +60,13 @@ suspicion as the fixes.
 Decide: approve, request changes, or escalate (something a human must
 see — raise a hand AND say so in the review).
 
+Record the commit you reviewed immediately after your fetch
+(`git rev-parse pr-<N>`) and end your review body with the exact line
+`Reviewed-head: <that sha>`. The forge stamps reviews with the head at
+posting time, so if pushes land while you work, the stamp would claim
+your verdict for a tree you never read — the declaration pins it to
+the one you did, and the fold's merge gate trusts the declaration.
+
 Post exactly one review via the API:
 
     curl -s -X POST "$FORGEJO_URL/api/v1/repos/<owner/repo>/pulls/<N>/reviews" \

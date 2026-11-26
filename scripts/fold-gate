@@ -143,10 +143,26 @@ def main():
     headref = (pr.get("head") or {}).get("ref") or ""
 
     # --- the two keys, both pinned to the CURRENT head commit ---
+    # Pinning trusts the body's own Reviewed-head declaration over the
+    # forge's commit_id stamp: the stamp records the head at POSTING
+    # time, so a push landing mid-review teleports a verdict onto a
+    # tree the reviewer never read (observed both ways: a stale RC
+    # raising a false disagreement hand, and the mirror image — a
+    # stale APPROVE blessing unreviewed code — which this check is
+    # really for). Legacy reviews without the line keep the stamp.
+    def pinned_head(r):
+        m = re.search(r"^Reviewed-head:\s*([0-9a-f]{7,40})",
+                      r.get("body") or "", re.M)
+        return m.group(1) if m else (r.get("commit_id") or "")
+
+    def at_head(r):
+        p = pinned_head(r)
+        return bool(p) and (head.startswith(p) or p.startswith(head))
+
     revs = api(f"repos/{repo}/pulls/{pr_n}/reviews")
     bw = [r for r in revs
           if (r.get("user") or {}).get("login") == "bellwether"
-          and r.get("commit_id") == head]
+          and at_head(r)]
     formal = max((r for r in bw
                   if r.get("state") in ("APPROVED", "REQUEST_CHANGES")),
                  key=lambda r: r.get("id", 0), default=None)
@@ -189,10 +205,13 @@ def main():
         ntfy, ntok = fold_env("FOLD_NTFY"), cred("FOLD_NTFY_TOKEN")
         if ntfy and ntok:
             try:
+                # per-PR hand identity: the matching hand-down (sent on
+                # a later merge of this PR) lowers exactly this hand
                 urllib.request.urlopen(urllib.request.Request(
                     ntfy, data=msg.encode(),
                     headers={"Authorization": f"Bearer {ntok}",
-                             "Title": "raise-hand: fold-gate"}), timeout=15)
+                             "Title": f"raise-hand: fold-gate "
+                                      f"{repo}#{pr_n}"}), timeout=15)
             except Exception as exc:
                 log(f"ntfy hand failed ({exc}) — disagreement stands "
                     "unmerged either way")
@@ -221,6 +240,26 @@ def main():
         return 1
     log(f"{repo}#{pr_n}: MERGED (two keys at {head[:10]}: formal "
         f"APPROVED + v1 shadow APPROVE)")
+    # A merge supersedes any earlier disagreement on this PR: fresh
+    # verdicts at the new head are the resolution, so the hand comes
+    # down on the same channel it went up (per-PR identity).
+    try:
+        if json.load(open(os.path.join(STATE, "reviews.json"))).get(
+                f"{repo}#{pr_n}", {}).get("gate_sig"):
+            ntfy, ntok = fold_env("FOLD_NTFY"), cred("FOLD_NTFY_TOKEN")
+            if ntfy and ntok:
+                urllib.request.urlopen(urllib.request.Request(
+                    ntfy,
+                    data=(f"superseded — PR #{pr_n} merged on fresh "
+                          f"two-key agreement at {head[:10]}").encode(),
+                    headers={"Authorization": f"Bearer {ntok}",
+                             "Title": f"hand-down: fold-gate "
+                                      f"{repo}#{pr_n}",
+                             "Priority": "min"}), timeout=15)
+                log(f"{repo}#{pr_n}: earlier disagreement hand lowered "
+                    "(superseded by this merge)")
+    except Exception:
+        pass
     gate_note("merged")
 
     # --- author session: registry-owned resolution, never prose.

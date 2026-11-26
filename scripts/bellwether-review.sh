@@ -62,6 +62,12 @@ LLM_KEY=${FOLD_REVIEW_KEY:-${REG_KEY:-proxy-injected}}
 PRJSON=$(curl -sf -H "Authorization: token $TOKEN" "$FORGEJO/api/v1/repos/$REPO/pulls/$PR")
 TITLE=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["title"])' "$PRJSON")
 HEADREF=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["head"]["ref"])' "$PRJSON")
+# The head this run actually reviews, declared in the posted body: the
+# forge stamps a review with the head at POSTING time, so a push landing
+# mid-run teleports the verdict onto a tree this run never read
+# (observed: two contradictory shadow verdicts stamped onto one commit).
+# The gate trusts the declaration over the stamp.
+HEADSHA=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["head"]["sha"])' "$PRJSON")
 # The author's workspace — the doorbell's return address — comes from
 # the fold's OWN registry (dispatch assigned the branch and recorded
 # it), never from author-written prose: a PR body naming someone else's
@@ -397,17 +403,18 @@ if [ "$VERDICT" = "escalate" ] && [ -n "$NTFY" ]; then
 fi
 BODY=$(python3 -c 'import json,sys;print(json.loads(sys.argv[1])["body"])' "$REVIEW")
 
-python3 - "$LABEL" "$BODY" <<EOF
+python3 - "$LABEL" "$BODY" "$HEADSHA" <<EOF
 import json, sys, urllib.request
-label, body = sys.argv[1], sys.argv[2]
+label, body, sha = sys.argv[1], sys.argv[2], sys.argv[3]
 req = urllib.request.Request(
     "$FORGEJO/api/v1/repos/$REPO/pulls/$PR/reviews",
     data=json.dumps({"event": "COMMENT",
-                     "body": f"[v1 shadow — verdict: {label}]\n\n{body}"}).encode(),
+                     "body": f"[v1 shadow — verdict: {label}]\n"
+                             f"Reviewed-head: {sha}\n\n{body}"}).encode(),
     headers={"Content-Type": "application/json", "Authorization": "token $TOKEN"},
 )
 resp = json.load(urllib.request.urlopen(req, timeout=60))
-print(f"posted shadow review id={resp['id']} (verdict {label})")
+print(f"posted shadow review id={resp['id']} (verdict {label} @ {sha[:10]})")
 EOF
 # No doorbell and no merge from this lane anymore: the formal verdict
 # (bellwether v2) rings the author through the board's webhook, and the
